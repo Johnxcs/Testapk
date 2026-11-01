@@ -8,7 +8,6 @@ import wave
 from pathlib import Path
 
 RATE = 44100
-_tts = None
 _keep = []
 _done = {}
 
@@ -23,10 +22,35 @@ def _activity():
 
 
 # ------------------------------ text to speech ------------------------------
-def _get_tts(tags):
-    global _tts
-    if _tts is not None:
-        return _tts
+_engines = {}
+_done_listener = None
+_announced = set()
+
+
+def _make_done_listener():
+    global _done_listener
+    if _done_listener is None:
+        from jnius import PythonJavaClass, java_method
+
+        class OnDone(PythonJavaClass):
+            # also fires when synthesis fails, so we always check the output file afterwards
+            __javainterfaces__ = ["android/speech/tts/TextToSpeech$OnUtteranceCompletedListener"]
+            __javacontext__ = "app"
+
+            @java_method("(Ljava/lang/String;)V")
+            def onUtteranceCompleted(self, uid):
+                ev = _done.get(str(uid))
+                if ev:
+                    ev.set()
+
+        _done_listener = OnDone()
+    return _done_listener
+
+
+def _open_engine(pkg):
+    """TextToSpeech instance for an engine package (None = phone default), or None."""
+    if pkg in _engines:
+        return _engines[pkg]
     from jnius import PythonJavaClass, java_method
 
     ready, status = threading.Event(), {}
@@ -40,42 +64,53 @@ def _get_tts(tags):
             status["v"] = st
             ready.set()
 
-    class OnDone(PythonJavaClass):
-        __javainterfaces__ = ["android/speech/tts/TextToSpeech$OnUtteranceCompletedListener"]
-        __javacontext__ = "app"
-
-        @java_method("(Ljava/lang/String;)V")
-        def onUtteranceCompleted(self, uid):
-            ev = _done.get(str(uid))
-            if ev:
-                ev.set()
-
-    init, done = OnInit(), OnDone()
-    _keep.extend([init, done])
-    tts = _cls("android.speech.tts.TextToSpeech")(_activity(), init)
+    init = OnInit()
+    _keep.append(init)
+    TTS = _cls("android.speech.tts.TextToSpeech")
+    try:
+        tts = TTS(_activity(), init, pkg) if pkg else TTS(_activity(), init)
+    except Exception:
+        _engines[pkg] = None
+        return None
     if not ready.wait(20) or status.get("v") != 0:
-        raise RuntimeError("Phone text-to-speech isn't available. Install or enable "
-                           "'Speech Recognition & Synthesis from Google' in Android settings.")
-    tts.setOnUtteranceCompletedListener(done)
-    Locale = _cls("java.util.Locale")
-    for i, tag in enumerate(tags):
-        loc = Locale.forLanguageTag(tag)
-        if tts.isLanguageAvailable(loc) >= 0:
-            tts.setLanguage(loc)
-            if i > 0:
-                print(f"  (voice for {tags[0]} not installed; using {tag})")
-            break
-    else:
-        raise RuntimeError("No usable text-to-speech voice found on this phone.")
-    _tts = tts
+        try:
+            tts.shutdown()
+        except Exception:
+            pass
+        _engines[pkg] = None
+        return None
+    tts.setOnUtteranceCompletedListener(_make_done_listener())
+    _engines[pkg] = tts
     return tts
+
+
+def _read_wav(path):
+    """Tolerant WAV reader (engines often write streaming headers with bad sizes)."""
+    import struct
+    b = Path(path).read_bytes()
+    if b[:4] != b"RIFF":
+        raise RuntimeError("not a WAV file")
+    pos, fmt, data = 12, None, None
+    while pos + 8 <= len(b):
+        cid = b[pos:pos + 4]
+        size = int.from_bytes(b[pos + 4:pos + 8], "little")
+        if cid == b"fmt ":
+            _, ch, rate, _, _, bits = struct.unpack("<HHIIHH", b[pos + 8:pos + 24])
+            fmt = (ch, bits // 8, rate)
+        elif cid == b"data":
+            start = pos + 8
+            end = start + size if 0 < size <= len(b) - start else len(b)
+            data = b[start:end]
+            break
+        pos += 8 + size + (size & 1)
+    if fmt is None or not data:
+        raise RuntimeError("WAV has no audio data")
+    return fmt[0], fmt[1], fmt[2], data
 
 
 def _normalize_wav(src, dst):
     import audioop
-    with wave.open(str(src), "rb") as r:
-        ch, sw, rate, n = r.getnchannels(), r.getsampwidth(), r.getframerate(), r.getnframes()
-        data = r.readframes(n)
+    ch, sw, rate, data = _read_wav(src)
     if sw != 2:
         data = audioop.lin2lin(data, sw, 2)
     if ch == 2:
@@ -89,26 +124,56 @@ def _normalize_wav(src, dst):
         w.writeframes(data)
 
 
-def tts_to_wav(text, out_wav, voice=None):
+def _try_synth(tts, tag, text, raw):
     from jnius import cast
-    voice = voice or {}
-    tts = _get_tts([voice.get("locale") or "fil-PH", "tl-PH", "en-US"])
+    loc = _cls("java.util.Locale").forLanguageTag(tag)
+    if tts.isLanguageAvailable(loc) < 0:
+        return False, "language not installed"
+    tts.setLanguage(loc)
+    raw.unlink(missing_ok=True)
     uid = f"u{time.time_ns()}"
     ev = threading.Event()
     _done[uid] = ev
-    raw = Path(out_wav).with_suffix(".raw.wav")
-    raw.unlink(missing_ok=True)
     cs = cast("java.lang.CharSequence", _cls("java.lang.String")(text))
     rc = tts.synthesizeToFile(cs, None, _cls("java.io.File")(str(raw)), uid)
     if rc != 0:
-        raise RuntimeError("text-to-speech refused the request")
-    ev.wait(120)
+        _done.pop(uid, None)
+        return False, "request rejected"
+    ev.wait(90)
     _done.pop(uid, None)
-    if not raw.is_file() or raw.stat().st_size < 100:
-        raise RuntimeError("text-to-speech produced no audio")
-    time.sleep(0.2)
-    _normalize_wav(raw, out_wav)
-    raw.unlink(missing_ok=True)
+    time.sleep(0.3)
+    if raw.is_file() and raw.stat().st_size > 200:
+        return True, ""
+    return False, "engine wrote no audio"
+
+
+def tts_to_wav(text, out_wav, voice=None):
+    voice = voice or {}
+    tags = []
+    for t in (voice.get("locale"), "fil-PH", "tl-PH", "en-US", "en-GB"):
+        if t and t not in tags:
+            tags.append(t)
+    raw = Path(out_wav).with_suffix(".raw.wav")
+    tried = []
+    for pkg in ("com.google.android.tts", None):
+        tts = _open_engine(pkg)
+        if tts is None:
+            tried.append(f"{pkg or 'default engine'}: not available")
+            continue
+        for tag in tags:
+            ok, why = _try_synth(tts, tag, text, raw)
+            if ok:
+                _normalize_wav(raw, out_wav)
+                raw.unlink(missing_ok=True)
+                key = (pkg, tag)
+                if key not in _announced:
+                    _announced.add(key)
+                    print(f"  voice: {tag} ({pkg or 'default engine'})")
+                return
+            tried.append(f"{(pkg or 'default').split('.')[-1]}/{tag}: {why}")
+    raise RuntimeError("no phone voice produced audio. Tried: " + "; ".join(tried) +
+                       ". Install 'Speech Recognition & Synthesis from Google' and download "
+                       "a voice in Settings > Text-to-speech output.")
 
 
 # ----------------------------- MediaCodec encoders -----------------------------
