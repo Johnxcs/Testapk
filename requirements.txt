@@ -1,0 +1,8 @@
+pillow>=10.0
+pygments>=2.15
+gtts>=2.4
+edge-tts>=6.1
+imageio-ffmpeg>=0.4.9
+
+# optional: offline robotic voice fallback (no internet needed)
+# pyttsx3

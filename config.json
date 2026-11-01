@@ -1,0 +1,25 @@
+{
+  "_help": "Global defaults. Topics in topics/ override fps, resolution, font_size, voice, handle and more. layout: 'shorts' = vertical 9:16 YouTube Shorts, 'editor' = classic 16:9 full editor.",
+  "output_dir": "output",
+  "fps": 60,
+  "resolution": [1080, 1920],
+  "layout": "shorts",
+  "font": "",
+  "font_size": 34,
+  "cursor": "bar",
+  "theme": "dark-plus",
+  "handle": "",
+  "voice": {
+    "engine": "gtts",
+    "name": "fil-PH-AngeloNeural",
+    "lang": "tl",
+    "rate": ""
+  },
+  "typing_speed": 1.3,
+  "base_typing_cps": 9.0,
+  "typing_delay": 0.5,
+  "narration_coverage": 0.85,
+  "pause_after_scene": 0.6,
+  "wait_duration": 3.0,
+  "crf": 20
+}

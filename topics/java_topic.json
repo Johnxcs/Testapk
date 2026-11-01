@@ -1,0 +1,49 @@
+{
+  "title": "Switch sa Java",
+  "description": "Paano pumili ng isa sa maraming choices gamit ang switch.",
+  "filename": "Main.java",
+  "language": "java",
+  "fps": 60,
+  "resolution": [1080, 1920],
+  "scenes": [
+    {
+      "kind": "title",
+      "title": "Switch",
+      "subtitle": "ang pang-pili sa Java",
+      "narration": "Hi guys! Welcome back! Sa video na 'to, we'll learn ang switch. Kapag sobrang dami na ng else if mo, switch ang mas malinis na gamitin."
+    },
+    {
+      "kind": "code",
+      "code_mode": "replace",
+      "code": "int day = 3;\n\nswitch (day) {\n    case 1:\n        System.out.println(\"Lunes\");\n        break;\n    case 2:\n        System.out.println(\"Martes\");\n        break;\n    case 3:\n        System.out.println(\"Miyerkules\");\n        break;\n    default:\n        System.out.println(\"Ibang araw\");\n}\n",
+      "narration": "First, ang day ay three. Sa switch, ilalagay mo sa parenthesis ang value na i-che-check. Tapos bawat case ay isang choice. Kapag tumama ang case, yun ang tatakbo. Ang default naman ay para sa lahat ng hindi tumama, parang else."
+    },
+    {
+      "kind": "code",
+      "code_mode": "append",
+      "code": "\nString size = \"M\";\n\nswitch (size) {\n    case \"S\" -> System.out.println(\"Small\");\n    case \"M\" -> System.out.println(\"Medium\");\n    case \"L\" -> System.out.println(\"Large\");\n    default -> System.out.println(\"Unknown\");\n}\n",
+      "narration": "Pwede rin sa String, hindi lang sa numbers! At may mas modern na style: ang arrow. Wala nang break na kailangan. Ang size ay M, kaya Medium ang lalabas."
+    },
+    {
+      "kind": "code",
+      "code_mode": "append",
+      "code": "\nint x = 1;\n\nswitch (x) {\n    case 1:\n        System.out.println(\"One\");\n    case 2:\n        System.out.println(\"Two\");\n        break;\n}\n",
+      "narration": "Pero be careful sa old style! Kapag nakalimutan mo ang break, tuloy-tuloy siyang tatakbo sa susunod na case. Tinatawag yan na fall-through. Kaya One and Two ang lalabas, kahit one lang ang x."
+    },
+    {
+      "kind": "wait",
+      "narration": "Tandaan, case para sa bawat choice, default para sa iba pa. Sa old style, huwag kalimutan ang break. Sa arrow style, hindi na kailangan."
+    },
+    {
+      "kind": "run",
+      "narration": "Tara, i-run na natin! Type mo lang java Main dot java, and boom! Lalabas ang Miyerkules, Medium, One, at Two.",
+      "terminal": "$ java Main.java\nMiyerkules\nMedium\nOne\nTwo"
+    },
+    {
+      "kind": "title",
+      "title": "Ayos!",
+      "subtitle": "switch  case  break",
+      "narration": "Remember: switch, case, break, at default. Yan na yun! If nakatulong 'to, i-like, i-share, at i-follow mo ako. Thanks for watching!"
+    }
+  ]
+}

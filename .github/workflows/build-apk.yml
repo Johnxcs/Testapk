@@ -1,0 +1,49 @@
+name: Build APK
+on:
+  push:
+  workflow_dispatch:
+jobs:
+  build:
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+      - name: Cache buildozer
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.buildozer
+            .buildozer
+          key: buildozer-v5-${{ hashFiles('buildozer.spec') }}
+      - name: System packages
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y git zip unzip autoconf automake libtool pkg-config \
+            zlib1g-dev libncurses5-dev libncursesw5-dev libtinfo5 cmake libffi-dev libssl-dev
+      - name: Install buildozer
+        run: pip install buildozer cython==0.29.36 virtualenv
+      - name: Build APK
+        run: |
+          set -o pipefail
+          buildozer -v android debug 2>&1 | tee build.log
+      - name: Show real error in Annotations
+        if: failure()
+        run: |
+          MSG=$( (grep -m2 -A12 "Error compiling Cython" build.log || tail -30 build.log) | cut -c1-160 | head -30 | sed 's/%/%25/g' | awk '{printf "%s%%0A", $0}')
+          echo "::error title=REAL ERROR (copy this)::$MSG"
+      - uses: actions/upload-artifact@v4
+        if: success()
+        with:
+          name: CodeReels-apk
+          path: bin/*.apk
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: build-log
+          path: build.log
