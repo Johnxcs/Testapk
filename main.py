@@ -27,6 +27,7 @@ from kivy.uix.widget import Widget
 from kivy.utils import escape_markup
 
 from src import topics
+from src.scene_templates import TEMPLATES
 
 IS_ANDROID = "ANDROID_ARGUMENT" in os.environ or "ANDROID_BOOTLOGO" in os.environ
 
@@ -334,6 +335,21 @@ class ReelsApp(App):
             bar.add_widget(w)
         root.add_widget(bar)
 
+        chips = ScrollView(size_hint_y=None, height=dp(42), bar_width=0, do_scroll_y=False)
+        row = BoxLayout(size_hint_x=None, spacing=dp(8))
+        row.bind(minimum_width=row.setter("width"))
+        row.add_widget(lbl("Add scene:", 12, MUTED, bold=True, height=42))
+        row.children[0].size_hint_x = None
+        row.children[0].width = dp(84)
+        for name in TEMPLATES:
+            b = Button(text=f"+ {name}", size_hint_x=None, width=dp(30) + dp(9) * len(name),
+                       font_size=sp(13))
+            style_button(b, CARD2, ACCENT, radius=12)
+            b.bind(on_release=lambda _b, n=name: self.add_scene(n))
+            row.add_widget(b)
+        chips.add_widget(row)
+        root.add_widget(chips)
+
         self.editor = TextInput(
             multiline=True, font_name=MONO if Path(MONO).is_file() else "Roboto",
             font_size=sp(13), background_normal="", background_active="",
@@ -399,6 +415,27 @@ class ReelsApp(App):
         self.edit_msg.text = ""
         self.editor.text = topics.topic_path(self.selected_topic).read_text(encoding="utf-8")
         self.go("edit", "left")
+
+    def add_scene(self, name):
+        """Append a ready-made scene (before a closing title scene, if there is one)."""
+        import copy
+        try:
+            data = json.loads(self.editor.text)
+            scenes = data.setdefault("scenes", [])
+        except Exception as e:
+            self.edit_msg.text = f"[color={BAD}]Fix the JSON first: {escape_markup(str(e))}[/color]"
+            return
+        scene = copy.deepcopy(TEMPLATES[name])
+        if len(scenes) >= 2 and scenes[-1].get("kind") == "title" and name != "Title":
+            scenes.insert(len(scenes) - 1, scene)
+        else:
+            scenes.append(scene)
+        self.editor.text = json.dumps(data, indent=2, ensure_ascii=False)
+        self.edit_msg.text = f"[color={GOOD}]Added {name} scene. Edit it, then press Save.[/color]"
+        try:
+            self.editor.do_cursor_movement("cursor_end", control=True)
+        except Exception:
+            pass
 
     def save_topic(self, *_):
         try:

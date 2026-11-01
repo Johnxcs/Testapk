@@ -4,6 +4,7 @@ from pathlib import Path
 from PIL import Image
 
 from . import media, narration, topics, typer
+from .card_renderer import CARD_KINDS, CardRenderer
 from .editor_renderer import EditorRenderer
 from .shorts import ShortsComposer
 from .theme import get_theme
@@ -93,6 +94,14 @@ def render_topic(topic_id, cfg, overrides):
                 w, h, fps, _font(topic, cfg), theme, render_cfg,
                 title=sc.get("title", ""),
                 footer=topic.get("title", "") if sc.get("subtitle") else "")
+    cards = None
+    if any(sc.get("kind") in CARD_KINDS for sc in scenes):
+        from .fonts import PROJECT_ROOT
+        cards = CardRenderer(w, h, fps, _font(topic, cfg), theme, render_cfg,
+                             footer=topic.get("title", ""),
+                             base_dirs=[PROJECT_ROOT, topics.TOPICS_DIR, path.parent,
+                                        Path("/storage/emulated/0/CodeReels"),
+                                        Path(overrides.get("out") or cfg["output_dir"])])
     composer = None
     if shorts:
         composer = ShortsComposer(w, h, fps, _font(topic, cfg), theme,
@@ -111,6 +120,8 @@ def render_topic(topic_id, cfg, overrides):
             k_sub = k - k_title
             cursor = True if typing_window else blink
             img = r.render_full(t.title, k_title, k_sub, t.subtitle, cursor)
+        elif t.kind in CARD_KINDS:
+            img = cards.render(t_i, t.card, typer.visible_index(f, t))
         else:
             k = typer.visible_index(f, t)
             buf = typer.buffer_at(t, k)
@@ -165,6 +176,10 @@ def _write_transcript(out_dir, topic, scenes, timings, fps, engine):
         "run": lambda sc: (sc.get("terminal", "") or "").strip(),
         "wait": lambda sc: "(pause)",
     }
+    for kk in CARD_KINDS:
+        notes[kk] = lambda sc: " | ".join(str(v) for key, v in sc.items()
+                                           if key in ("heading", "body", "text", "author", "value", "label", "caption")
+                                           and v)
     for sc, t in zip(scenes, timings):
         kind = t.kind
         lines.append(f"[{_mmss(t.start_frame, fps)} – {_mmss(t.start_frame + t.frames, fps)}] "

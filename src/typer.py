@@ -1,5 +1,7 @@
 """Typewriter timing model: converts narration durations into per-scene frame counts."""
-from dataclasses import dataclass
+from dataclasses import dataclass, field
+
+from .card_renderer import CARD_KINDS, count_units
 
 
 @dataclass
@@ -18,6 +20,7 @@ class SceneTiming:
     typing_frames: int = 0
     frames: int = 0
     start_frame: int = 0
+    card: dict = None            # scene dict for text/bullets/steps/quote/compare/stat/image
 
 
 def build_timings(scenes, durations, fps, cfg):
@@ -52,6 +55,9 @@ def build_timings(scenes, durations, fps, cfg):
             t.code_mode = sc.get("code_mode", "append")
             t.code_before = base
             t.chars = len(t.code)
+        elif kind in CARD_KINDS:
+            t.card = sc
+            t.chars = count_units(sc)
         else:  # wait
             t.code_before = base
             t.term_before = term
