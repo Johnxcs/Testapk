@@ -130,13 +130,71 @@ def _activity():
     return autoclass("org.kivy.android.PythonActivity").mActivity
 
 
+SHARED_DIR = Path("/storage/emulated/0/CodeReels")
+
+
+def _sdk():
+    from jnius import autoclass
+    return autoclass("android.os.Build$VERSION").SDK_INT
+
+
+def has_storage_access() -> bool:
+    """True when the app may create /storage/emulated/0/CodeReels."""
+    if not IS_ANDROID:
+        return True
+    try:
+        if _sdk() >= 30:
+            from jnius import autoclass
+            return bool(autoclass("android.os.Environment").isExternalStorageManager())
+        from android.permissions import Permission, check_permission
+        return bool(check_permission(Permission.WRITE_EXTERNAL_STORAGE))
+    except Exception:
+        return False
+
+
+def request_storage_access():
+    try:
+        if _sdk() >= 30:
+            from jnius import autoclass
+            Intent = autoclass("android.content.Intent")
+            Settings = autoclass("android.provider.Settings")
+            Uri = autoclass("android.net.Uri")
+            act = _activity()
+            intent = Intent(Settings.ACTION_MANAGE_APP_ALL_FILES_ACCESS_PERMISSION,
+                            Uri.parse("package:" + act.getPackageName()))
+            act.startActivity(intent)
+        else:
+            from android.permissions import Permission, request_permissions
+            request_permissions([Permission.WRITE_EXTERNAL_STORAGE,
+                                 Permission.READ_EXTERNAL_STORAGE])
+    except Exception as e:
+        print(f"(could not open permission screen: {e})")
+
+
 def output_dir() -> Path:
+    """Preferred: /storage/emulated/0/CodeReels. Fallback: the app's own folder."""
     if IS_ANDROID:
+        if has_storage_access():
+            try:
+                SHARED_DIR.mkdir(parents=True, exist_ok=True)
+                return SHARED_DIR
+            except OSError:
+                pass
         try:
             return Path(_activity().getExternalFilesDir(None).getAbsolutePath()) / "output"
         except Exception:
             pass
     return ROOT / "output"
+
+
+def scan_file(path):
+    """Make a file show up in Gallery."""
+    try:
+        from jnius import autoclass
+        autoclass("android.media.MediaScannerConnection").scanFile(
+            _activity(), [str(path)], None, None)
+    except Exception:
+        pass
 
 
 def keep_screen_on():
@@ -373,6 +431,11 @@ class ReelsApp(App):
     def start_render(self, *_):
         if not self.selected_topic:
             return self.say("Pick a topic first.", "bad")
+        if IS_ANDROID and not has_storage_access() and not getattr(self, "_asked", False):
+            self._asked = True
+            request_storage_access()
+            return self.say("Turn on “Allow access to all files” for Code Reels, "
+                            "come back, then tap Render again.", "info")
         self.render_btn.disabled = True
         self.render_btn.text = "[b]Starting…[/b]"
         self.bar.value = 0
@@ -388,10 +451,16 @@ class ReelsApp(App):
             from src.config import load_config
             from src.video import render_topic
             cfg = load_config(str(ROOT / "config.json"))
-            mp4 = render_topic(tid, cfg, {"fps": fps, "out": str(output_dir()),
-                                          "no_audio": silent})
-            ok = publish_to_gallery(Path(mp4), f"{tid}.mp4")
-            self.say(f"Done. Saved to Movies/CodeReels/{tid}.mp4" if ok else f"Done. {mp4}", "good")
+            out = output_dir()
+            mp4 = Path(render_topic(tid, cfg, {"fps": fps, "out": str(out),
+                                               "no_audio": silent}))
+            if out == SHARED_DIR:
+                scan_file(mp4)
+                self.say(f"Done. Saved to CodeReels/{mp4.parent.name}/{mp4.name}", "good")
+            elif publish_to_gallery(mp4, f"{tid}.mp4"):
+                self.say(f"Done. Saved to Movies/CodeReels/{tid}.mp4", "good")
+            else:
+                self.say(f"Done. {mp4}", "good")
             Clock.schedule_once(lambda dt: setattr(self.bar, "value", 100), 0)
         except BaseException as e:  # topics.py raises SystemExit with messages
             import traceback

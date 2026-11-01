@@ -18,7 +18,7 @@ requirements = python3==3.11.5,hostpython3==3.11.5,kivy==2.3.0,pillow,pygments
 orientation = portrait
 fullscreen = 0
 
-android.permissions = INTERNET
+android.permissions = INTERNET,MANAGE_EXTERNAL_STORAGE,WRITE_EXTERNAL_STORAGE,READ_EXTERNAL_STORAGE
 android.extra_manifest_xml = ./extra_manifest.xml
 android.api = 33
 android.minapi = 29
