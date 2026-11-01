@@ -14,7 +14,9 @@ from kivy.uix.spinner import Spinner, SpinnerOption
 from kivy.uix.textinput import TextInput
 from kivy.utils import escape_markup
 
-from src import topics
+from src import estimate, topics
+from src.config import load_config
+from src.narration import estimate_duration
 from src.scene_templates import TEMPLATES
 from ui_kit import (ACCENT, ACCENT_DN, BAD, CARD, CARD2, CARD2_ON, GOOD, MONO, MUTED, ROOT,
                     TEXT, UIFONT, confirm, framed_input, lbl, rgb, style_button, style_card)
@@ -121,6 +123,10 @@ class SceneEditor:
     def __init__(self, app):
         self.app = app
         self.tid, self.data = None, {}
+        try:
+            self.cfg = load_config(str(ROOT / "config.json"))
+        except Exception:
+            self.cfg = {}
         self.topic_inputs = {}
         self.idx, self.scene, self.inputs = None, {}, {}
         self._screens = [self._build_list(), self._build_form(), self._build_json()]
@@ -222,17 +228,32 @@ class SceneEditor:
         box.add_widget(card)
 
         scenes = self.data["scenes"]
-        box.add_widget(lbl(f"[b]SCENES  ({len(scenes)})[/b]", 11, MUTED, height=22))
-        if not scenes:
+        durs = estimate.scene_durations(scenes, self.cfg) if scenes else []
+        total = sum(durs)
+        warn = "  ·  over 60s" if total > 60 else ""
+        color = "FFB86C" if total > 60 else "3DDC97"
+        head = BoxLayout(size_hint_y=None, height=dp(40), padding=(dp(4), 0))
+        head.add_widget(lbl(f"[b]SCENES  ({len(scenes)})[/b]", 11, MUTED, height=40))
+        total_lbl = lbl(f"[b][color={color}]\u2248 {estimate.fmt(total)}[/color][/b]  [color=8A90A0]total{warn}[/color]",
+                        15, TEXT, height=40, halign="right")
+        head.add_widget(total_lbl)
+        box.add_widget(head)
+        if scenes:
+            box.add_widget(lbl("Estimates. The exact length depends on the voice when you render.",
+                               11, MUTED, height=16))
+        else:
             box.add_widget(lbl("No scenes yet. Tap “+ Title”, “+ Code”, “+ Text”… above.", 14, MUTED, height=40))
+        start = 0.0
         for i, sc in enumerate(scenes):
-            box.add_widget(self._row(i, sc))
+            box.add_widget(self._row(i, sc, start, durs[i]))
+            start += durs[i]
 
-    def _row(self, i, sc):
+    def _row(self, i, sc, start=0.0, dur=0.0):
         label, color = KIND_INFO.get(sc.get("kind"), (str(sc.get("kind")), "8A90A0"))
         row = BoxLayout(spacing=dp(6), size_hint_y=None, height=dp(78))
         main = Button(
-            text=(f"[b]{i + 1}   [color={color}]{label}[/color][/b]\n"
+            text=(f"[b]{i + 1}   [color={color}]{label}[/color][/b]"
+                  f"   [size={int(sp(13))}][color=8A90A0]{estimate.fmt(start)}  \u00b7  {dur:.1f}s[/color][/size]\n"
                   f"[size={int(sp(13))}][color=8A90A0]{escape_markup(summary(sc))}[/color][/size]"),
             markup=True, halign="left", valign="middle", font_size=sp(16), padding_x=dp(14))
         main.bind(size=lambda inst, s: setattr(inst, "text_size", (s[0] - dp(28), s[1])))
@@ -322,7 +343,8 @@ class SceneEditor:
     def open_form(self, idx, template=None):
         self.idx = idx
         self.scene = copy.deepcopy(self.data["scenes"][idx]) if idx is not None else template
-        self.form_title.text = f"Scene {idx + 1}" if idx is not None else "New scene"
+        self._form_base = f"Scene {idx + 1}" if idx is not None else "New scene"
+        self.form_title.text = self._form_base
         self._render_form()
         self.app.go("scene", "left")
 
@@ -364,6 +386,27 @@ class SceneEditor:
             else:
                 continue
             self.inputs[key] = (typ, w)
+
+        self.narr_label = lbl("", 12, MUTED, height=22)
+        box.add_widget(self.narr_label)
+        for _typ, w in self.inputs.values():
+            w.bind(text=self._update_time)
+        self._update_time()
+
+    def _update_time(self, *_):
+        try:
+            sc = self._collect()
+            dur = estimate.scene_durations([sc], self.cfg)[0]
+            text = str(sc.get("narration", "") or "")
+            words = len(text.split())
+            self.form_title.text = f"{self._form_base}  \u00b7  \u2248 {dur:.1f}s"
+            if text.strip():
+                self.narr_label.text = (f"Voice \u2248 {estimate_duration(text):.1f}s  ({words} words)  \u00b7  "
+                                        f"scene \u2248 {dur:.1f}s")
+            else:
+                self.narr_label.text = f"No narration: scene \u2248 {dur:.1f}s (typing speed)"
+        except Exception:
+            pass
 
     def _image_field(self, box, value):
         row = BoxLayout(spacing=dp(8), size_hint_y=None, height=dp(54))
