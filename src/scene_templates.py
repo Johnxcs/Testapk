@@ -7,6 +7,7 @@ TEMPLATES = {
              "narration": "Explain this code."},
     "Run": {"kind": "run", "terminal": "$ run\nOutput line",
             "narration": "Now let's run it."},
+    "Pause": {"kind": "wait", "narration": "Say something while the screen holds."},
     "Text": {"kind": "text", "heading": "Big idea",
              "body": "Explain one idea in a few short sentences. It types itself on screen.",
              "narration": "Say it out loud here."},

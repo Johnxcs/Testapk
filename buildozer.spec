@@ -1,7 +1,7 @@
 [app]
 title = Code Reels
-package.name = codereels
-package.domain = ph.codebyte
+package.name = Text2Reels
+package.domain = ph.aibalac
 source.dir = .
 source.include_exts = py,json,ttf,otf,png
 source.include_patterns = src/*,topics/*,fonts/*,fonts/ui/*,images/*,config.json

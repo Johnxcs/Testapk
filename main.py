@@ -4,6 +4,7 @@ import os
 import re
 import sys
 import threading
+import time
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent
@@ -13,12 +14,13 @@ sys.path.insert(0, str(ROOT))
 from kivy.app import App
 from kivy.clock import Clock
 from kivy.core.window import Window
-from kivy.graphics import Color, RoundedRectangle
+from kivy.graphics import Color, Line, RoundedRectangle
 from kivy.metrics import dp, sp
 from kivy.properties import NumericProperty
 from kivy.uix.boxlayout import BoxLayout
 from kivy.uix.button import Button
 from kivy.uix.label import Label
+from kivy.uix.popup import Popup
 from kivy.uix.screenmanager import Screen, ScreenManager, SlideTransition
 from kivy.uix.scrollview import ScrollView
 from kivy.uix.textinput import TextInput
@@ -27,102 +29,12 @@ from kivy.uix.widget import Widget
 from kivy.utils import escape_markup
 
 from src import topics
-from src.scene_templates import TEMPLATES
+from scene_editor import SceneEditor
 
 IS_ANDROID = "ANDROID_ARGUMENT" in os.environ or "ANDROID_BOOTLOGO" in os.environ
 
 
-# ------------------------------- theme -------------------------------
-def rgb(h, a=1.0):
-    h = h.lstrip("#")
-    return tuple(int(h[i:i + 2], 16) / 255 for i in (0, 2, 4)) + (a,)
-
-
-BG = rgb("#0F1115")
-CARD = rgb("#181B22")
-CARD2 = rgb("#232834")
-CARD2_ON = rgb("#323A4D")
-ACCENT = rgb("#5B8CFF")
-ACCENT_DN = rgb("#3F6FE0")
-DISABLED = rgb("#2A2F3B")
-TEXT = rgb("#E8EAF0")
-MUTED = rgb("#8A90A0")
-GOOD, BAD, MUTED_HEX = "3DDC97", "FF6B6B", "8A90A0"
-MONO = str(ROOT / "fonts" / "DejaVuSansMono.ttf")
-
-
-def style_card(w, bg=CARD, radius=16):
-    with w.canvas.before:
-        col = Color(*bg)
-        rr = RoundedRectangle(pos=w.pos, size=w.size, radius=[dp(radius)])
-
-    def upd(*_):
-        rr.pos, rr.size = w.pos, w.size
-    w.bind(pos=upd, size=upd)
-    return w
-
-
-def style_button(w, bg=CARD2, bg_on=CARD2_ON, radius=14, fg=TEXT):
-    """Flat rounded button; `bg_on` is the pressed colour (or selected colour for toggles)."""
-    w.background_normal = ""
-    w.background_down = ""
-    w.background_color = (0, 0, 0, 0)
-    w.color = fg
-    w.disabled_color = (1, 1, 1, 0.55)
-    with w.canvas.before:
-        col = Color(*bg)
-        rr = RoundedRectangle(pos=w.pos, size=w.size, radius=[dp(radius)])
-
-    def upd(*_):
-        col.rgba = DISABLED if w.disabled else (bg_on if w.state == "down" else bg)
-        rr.pos, rr.size = w.pos, w.size
-    w.bind(pos=upd, size=upd, state=upd, disabled=upd)
-    upd()
-    return w
-
-
-def lbl(text, size=14, color=TEXT, bold=False, height=None, halign="left"):
-    l = Label(text=text, font_size=sp(size), color=color, bold=bold, markup=True,
-              halign=halign, valign="middle")
-    if height:
-        l.size_hint_y = None
-        l.height = dp(height)
-    l.bind(size=lambda i, s: setattr(i, "text_size", s))
-    return l
-
-
-def segmented(options, group, default):
-    row = BoxLayout(spacing=dp(6), size_hint_y=None, height=dp(42))
-    btns = {}
-    for o in options:
-        b = ToggleButton(text=o, group=group, allow_no_selection=False,
-                         state="down" if o == default else "normal", font_size=sp(14))
-        style_button(b, CARD2, ACCENT, radius=11)
-        row.add_widget(b)
-        btns[o] = b
-    return row, btns
-
-
-def selected(btns):
-    return next(k for k, b in btns.items() if b.state == "down")
-
-
-class Bar(Widget):
-    value = NumericProperty(0)
-
-    def __init__(self, **kw):
-        super().__init__(**kw)
-        with self.canvas:
-            Color(*CARD2)
-            self._t = RoundedRectangle(radius=[dp(5)])
-            Color(*ACCENT)
-            self._f = RoundedRectangle(radius=[dp(5)])
-        self.bind(pos=self._u, size=self._u, value=self._u)
-
-    def _u(self, *_):
-        self._t.pos, self._t.size = self.pos, self.size
-        w = max(0, min(100, self.value)) / 100 * self.width
-        self._f.pos, self._f.size = self.pos, (w, self.height)
+from ui_kit import *  # noqa: F401,F403  (theme, buttons, helpers)
 
 
 # ---------------------------- Android helpers ----------------------------
@@ -265,10 +177,18 @@ class ReelsApp(App):
         self.selected_topic = None
         self.sm = ScreenManager(transition=SlideTransition(duration=0.18))
         self.sm.add_widget(self._home())
-        self.sm.add_widget(self._editor())
+        self.editor_ui = SceneEditor(self)
+        for scr in self.editor_ui.screens():
+            self.sm.add_widget(scr)
         self.refresh_topics()
         keep_screen_on()
         return self.sm
+
+    def on_pause(self):
+        return True            # stay alive while Android settings / the image picker are open
+
+    def on_resume(self):
+        pass
 
     # ---------- home screen ----------
     def _home(self):
@@ -297,12 +217,11 @@ class ReelsApp(App):
         opts.add_widget(row)
         root.add_widget(opts)
 
-        acts = BoxLayout(spacing=dp(10), size_hint_y=None, height=dp(48))
-        for text, cb in (("Edit JSON", self.open_editor), ("+  New topic", self.new_topic)):
-            b = Button(text=text, font_size=sp(15))
-            style_button(b)
-            b.bind(on_release=cb)
-            acts.add_widget(b)
+        acts = BoxLayout(spacing=dp(8), size_hint_y=None, height=dp(66))
+        acts.add_widget(tool_button("\u270e", "Edit", self.open_editor))
+        acts.add_widget(tool_button("\uff0b", "New", self.new_topic, tint=rgb("#3DDC97")))
+        acts.add_widget(tool_button("\u29c9", "Copy", self.dup_topic))
+        acts.add_widget(tool_button("\u2715", "Delete", self.ask_delete, tint=rgb("#FF6B6B")))
         root.add_widget(acts)
 
         self.render_btn = Button(text="[b]Render video[/b]", markup=True, font_size=sp(18),
@@ -316,48 +235,6 @@ class ReelsApp(App):
         self.status = lbl("Ready.", 12, MUTED, height=40)
         root.add_widget(self.status)
 
-        scr.add_widget(root)
-        return scr
-
-    # ---------- editor screen ----------
-    def _editor(self):
-        scr = Screen(name="edit")
-        root = BoxLayout(orientation="vertical", padding=dp(16), spacing=dp(12))
-        bar = BoxLayout(spacing=dp(10), size_hint_y=None, height=dp(48))
-        back = Button(text="‹  Back", size_hint_x=None, width=dp(90), font_size=sp(15))
-        style_button(back)
-        back.bind(on_release=lambda *_: self.go("home", "right"))
-        self.edit_title = lbl("", 16, TEXT, bold=True)
-        save = Button(text="Save", size_hint_x=None, width=dp(90), font_size=sp(15))
-        style_button(save, ACCENT, ACCENT_DN, fg=(1, 1, 1, 1))
-        save.bind(on_release=self.save_topic)
-        for w in (back, self.edit_title, save):
-            bar.add_widget(w)
-        root.add_widget(bar)
-
-        chips = ScrollView(size_hint_y=None, height=dp(42), bar_width=0, do_scroll_y=False)
-        row = BoxLayout(size_hint_x=None, spacing=dp(8))
-        row.bind(minimum_width=row.setter("width"))
-        row.add_widget(lbl("Add scene:", 12, MUTED, bold=True, height=42))
-        row.children[0].size_hint_x = None
-        row.children[0].width = dp(84)
-        for name in TEMPLATES:
-            b = Button(text=f"+ {name}", size_hint_x=None, width=dp(30) + dp(9) * len(name),
-                       font_size=sp(13))
-            style_button(b, CARD2, ACCENT, radius=12)
-            b.bind(on_release=lambda _b, n=name: self.add_scene(n))
-            row.add_widget(b)
-        chips.add_widget(row)
-        root.add_widget(chips)
-
-        self.editor = TextInput(
-            multiline=True, font_name=MONO if Path(MONO).is_file() else "Roboto",
-            font_size=sp(13), background_normal="", background_active="",
-            background_color=CARD, foreground_color=TEXT, cursor_color=ACCENT,
-            selection_color=(0.36, 0.55, 1, 0.35), padding=[dp(14), dp(14)])
-        root.add_widget(self.editor)
-        self.edit_msg = lbl("", 12, MUTED, height=20)
-        root.add_widget(self.edit_msg)
         scr.add_widget(root)
         return scr
 
@@ -406,47 +283,111 @@ class ReelsApp(App):
             n += 1
         topics.create(f"topic-{n}")
         self.refresh_topics(select=f"topic-{n}")
-        self.say(f"Created topic-{n}. Tap “Edit JSON” to change it.", "good")
+        self.say(f"Created topic-{n}.", "good")
+        self.editor_ui.open(f"topic-{n}")
 
     def open_editor(self, *_):
         if not self.selected_topic:
             return self.say("Pick a topic first.", "bad")
-        self.edit_title.text = f"{self.selected_topic}.json"
-        self.edit_msg.text = ""
-        self.editor.text = topics.topic_path(self.selected_topic).read_text(encoding="utf-8")
-        self.go("edit", "left")
+        self.editor_ui.open(self.selected_topic)
 
-    def add_scene(self, name):
-        """Append a ready-made scene (before a closing title scene, if there is one)."""
-        import copy
+    def dup_topic(self, *_):
+        tid = self.selected_topic
+        if not tid:
+            return self.say("Pick a topic first.", "bad")
+        base, new, n = f"{tid}-copy", f"{tid}-copy", 1
+        while (topics.TOPICS_DIR / f"{new}.json").exists():
+            n += 1
+            new = f"{base}{n}"
         try:
-            data = json.loads(self.editor.text)
-            scenes = data.setdefault("scenes", [])
+            data = json.loads(topics.topic_path(tid).read_text(encoding="utf-8"))
+            data["title"] = f"{data.get('title', tid)} (copy)"
+            (topics.TOPICS_DIR / f"{new}.json").write_text(
+                json.dumps(data, indent=2, ensure_ascii=False), encoding="utf-8")
         except Exception as e:
-            self.edit_msg.text = f"[color={BAD}]Fix the JSON first: {escape_markup(str(e))}[/color]"
-            return
-        scene = copy.deepcopy(TEMPLATES[name])
-        if len(scenes) >= 2 and scenes[-1].get("kind") == "title" and name != "Title":
-            scenes.insert(len(scenes) - 1, scene)
-        else:
-            scenes.append(scene)
-        self.editor.text = json.dumps(data, indent=2, ensure_ascii=False)
-        self.edit_msg.text = f"[color={GOOD}]Added {name} scene. Edit it, then press Save.[/color]"
-        try:
-            self.editor.do_cursor_movement("cursor_end", control=True)
-        except Exception:
-            pass
+            return self.say(f"Couldn't copy: {e}", "bad")
+        self.refresh_topics(select=new)
+        self.say(f"Copied to {new}.json", "good")
 
-    def save_topic(self, *_):
+    def ask_delete(self, *_):
+        tid = self.selected_topic
+        if not tid:
+            return self.say("Pick a topic first.", "bad")
+        confirm("Delete this topic?", f"{escape_markup(tid)}.json will be removed. "
+                "Videos you already rendered are kept.", "Delete", lambda: self.delete_topic(tid))
+
+    def delete_topic(self, tid):
         try:
-            json.loads(self.editor.text)
-        except json.JSONDecodeError as e:
-            self.edit_msg.text = f"[color={BAD}]Invalid JSON, not saved: {escape_markup(str(e))}[/color]"
+            topics.topic_path(tid).unlink()
+        except Exception as e:
+            return self.say(f"Couldn't delete: {e}", "bad")
+        self.selected_topic = None
+        self.refresh_topics()
+        self.say(f"Deleted {tid}.json", "good")
+
+    # ---------- pick images from the phone ----------
+    IMG_REQ = 7731
+
+    def images_dir(self) -> Path:
+        if IS_ANDROID:
+            if has_storage_access():
+                return SHARED_DIR / "images"
+            try:
+                return Path(_activity().getExternalFilesDir(None).getAbsolutePath()) / "images"
+            except Exception:
+                pass
+        return ROOT / "images"
+
+    def pick_images(self, callback):
+        """Open the gallery picker; callback(list_of_paths) runs on the UI thread."""
+        if not IS_ANDROID:
+            return self.editor_ui.notify("Picking images works on the phone only.", True)
+        try:
+            from android import activity
+            from jnius import autoclass
+            Intent = autoclass("android.content.Intent")
+            self._pick_cb = callback
+            if not getattr(self, "_bound", False):
+                activity.bind(on_activity_result=self._on_result)
+                self._bound = True
+            intent = Intent(Intent.ACTION_GET_CONTENT)
+            intent.setType("image/*")
+            intent.addCategory(Intent.CATEGORY_OPENABLE)
+            intent.putExtra(Intent.EXTRA_ALLOW_MULTIPLE, True)
+            _activity().startActivityForResult(intent, self.IMG_REQ)
+        except Exception as e:
+            self.editor_ui.notify(f"Can't open the picker: {e}", True)
+
+    def _on_result(self, request, result, data):
+        if request != self.IMG_REQ or result != -1 or data is None:
             return
-        topics.topic_path(self.selected_topic).write_text(self.editor.text, encoding="utf-8")
-        self.refresh_topics(select=self.selected_topic)
-        self.say(f"Saved {self.selected_topic}.json", "good")
-        self.go("home", "right")
+        try:
+            from jnius import autoclass
+            uris = []
+            clip = data.getClipData()
+            if clip is not None:
+                uris = [clip.getItemAt(i).getUri() for i in range(clip.getItemCount())]
+            elif data.getData() is not None:
+                uris = [data.getData()]
+            resolver = _activity().getContentResolver()
+            FileUtils = autoclass("android.os.FileUtils")
+            FOS = autoclass("java.io.FileOutputStream")
+            out_dir = self.images_dir()
+            out_dir.mkdir(parents=True, exist_ok=True)
+            stamp, paths = time.strftime("%Y%m%d_%H%M%S"), []
+            for n, uri in enumerate(uris, 1):
+                ext = {"image/png": ".png", "image/webp": ".webp"}.get(
+                    str(resolver.getType(uri) or ""), ".jpg")
+                dest = out_dir / f"img_{stamp}_{n}{ext}"
+                ins, outs = resolver.openInputStream(uri), FOS(str(dest))
+                FileUtils.copy(ins, outs)
+                ins.close()
+                outs.close()
+                paths.append(dest)
+            cb = self._pick_cb
+            Clock.schedule_once(lambda dt: cb(paths), 0)
+        except Exception as e:
+            Clock.schedule_once(lambda dt: self.editor_ui.notify(f"Couldn't import: {e}", True), 0)
 
     # ---------- rendering ----------
     def say(self, msg, kind="info"):

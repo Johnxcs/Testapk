@@ -1,0 +1,474 @@
+"""Form-based topic / scene editor (Kivy): lists scenes and edits each one with proper inputs."""
+import copy
+import json
+from pathlib import Path
+
+from kivy.metrics import dp, sp
+from kivy.uix.boxlayout import BoxLayout
+from kivy.uix.button import Button
+from kivy.uix.gridlayout import GridLayout
+from kivy.uix.image import Image as KImage
+from kivy.uix.screenmanager import Screen
+from kivy.uix.scrollview import ScrollView
+from kivy.uix.spinner import Spinner, SpinnerOption
+from kivy.uix.textinput import TextInput
+from kivy.utils import escape_markup
+
+from src import topics
+from src.scene_templates import TEMPLATES
+from ui_kit import (ACCENT, ACCENT_DN, BAD, CARD, CARD2, CARD2_ON, GOOD, MONO, MUTED, ROOT,
+                    TEXT, UIFONT, confirm, framed_input, lbl, rgb, style_button, style_card)
+
+# kind -> (label, colour)
+KIND_INFO = {
+    "title": ("Title", "5B8CFF"), "code": ("Code", "4EC9B0"), "run": ("Run", "FFB86C"),
+    "wait": ("Pause", "8A90A0"), "text": ("Text", "C792EA"), "bullets": ("Bullets", "7EE787"),
+    "steps": ("Steps", "79C0FF"), "quote": ("Quote", "F78166"), "compare": ("Compare", "FFA657"),
+    "stat": ("Stat", "E3B341"), "image": ("Image", "FF7EB6"),
+}
+LABEL_TO_KIND = {v[0]: k for k, v in KIND_INFO.items()}
+KIND_TEMPLATE = {"title": "Title", "code": "Code", "run": "Run", "wait": "Pause", "text": "Text",
+                 "bullets": "Bullets", "steps": "Steps", "quote": "Quote", "compare": "Compare",
+                 "stat": "Stat", "image": "Image"}
+
+# per-kind form fields: (key, label, type[, extra])
+FIELDS = {
+    "title": [("title", "Title", "line"), ("subtitle", "Subtitle", "line")],
+    "code": [("code_mode", "Code mode", "choice", ["append", "replace"]),
+             ("code", "Code", "mono", 230)],
+    "run": [("terminal", "Terminal text (first line = typed command, e.g. $ java Main)", "mono", 170)],
+    "wait": [],
+    "text": [("heading", "Heading", "line"), ("body", "Body text", "multi", 150)],
+    "bullets": [("heading", "Heading", "line"), ("items", "Bullet points (one per line)", "lines", 170)],
+    "steps": [("heading", "Heading", "line"), ("items", "Steps (one per line)", "lines", 170)],
+    "quote": [("text", "Quote", "multi", 150), ("author", "Author", "line")],
+    "compare": [("heading", "Heading", "line"),
+                ("left.title", "Left title (green)", "line"),
+                ("left.items", "Left items (one per line)", "lines", 120),
+                ("right.title", "Right title (red)", "line"),
+                ("right.items", "Right items (one per line)", "lines", 120)],
+    "stat": [("heading", "Heading (optional)", "line"), ("value", "Big value, e.g. 95%", "line"),
+             ("label", "Label under the value", "multi", 90)],
+    "image": [("heading", "Heading (optional)", "line"), ("image", "Image", "image"),
+              ("fit", "Fit", "choice", ["cover", "contain"]), ("caption", "Caption", "multi", 90)],
+}
+NARRATION = ("narration", "Narration (what the voice says)", "multi", 150)
+TOPIC_FIELDS = [("title", "Video title", "My video"), ("handle", "Your handle (shown on the video)", "@yourname"),
+                ("filename", "Code file name", "Main.java"), ("language", "Code language", "java")]
+
+
+class DarkOption(SpinnerOption):
+    def __init__(self, **kw):
+        super().__init__(**kw)
+        style_button(self, CARD2, CARD2_ON, radius=0)
+        self.height = dp(46)
+        self.font_size = sp(15)
+
+
+def _get(d, key, default=None):
+    for part in key.split("."):
+        if not isinstance(d, dict) or part not in d:
+            return default
+        d = d[part]
+    return d
+
+
+def _set(d, key, value):
+    parts = key.split(".")
+    for part in parts[:-1]:
+        d = d.setdefault(part, {})
+    d[parts[-1]] = value
+
+
+def _del(d, key):
+    parts = key.split(".")
+    for part in parts[:-1]:
+        d = d.get(part)
+        if not isinstance(d, dict):
+            return
+    d.pop(parts[-1], None)
+
+
+def summary(sc):
+    k = sc.get("kind")
+    items = [str(i) for i in sc.get("items", [])] if isinstance(sc.get("items"), list) else []
+    first = lambda t: next((l.strip() for l in str(t or "").split("\n") if l.strip()), "")
+    if k == "code":
+        t = first(sc.get("code"))
+    elif k == "run":
+        t = first(sc.get("terminal"))
+    elif k == "title":
+        t = str(sc.get("title", ""))
+    elif k in ("bullets", "steps"):
+        t = (str(sc.get("heading", "")) or (items[0] if items else "")) + (f"  ·  {len(items)} items" if items else "")
+    elif k == "compare":
+        t = str(sc.get("heading", "")) or f"{_get(sc, 'left.title', '')} vs {_get(sc, 'right.title', '')}"
+    elif k == "stat":
+        t = f"{sc.get('value', '')}  {sc.get('label', '')}"
+    elif k == "image":
+        t = Path(str(sc.get("image", ""))).name
+    elif k == "quote":
+        t = str(sc.get("text", ""))
+    elif k == "text":
+        t = str(sc.get("heading", "")) or first(sc.get("body"))
+    else:
+        t = ""
+    t = t.strip() or first(sc.get("narration")) or "(empty)"
+    return t if len(t) <= 54 else t[:52] + "…"
+
+
+class SceneEditor:
+    def __init__(self, app):
+        self.app = app
+        self.tid, self.data = None, {}
+        self.topic_inputs = {}
+        self.idx, self.scene, self.inputs = None, {}, {}
+        self._screens = [self._build_list(), self._build_form(), self._build_json()]
+
+    def screens(self):
+        return self._screens
+
+    # ------------------------------------------------------------ list screen
+    def _build_list(self):
+        scr = Screen(name="scenes")
+        root = BoxLayout(orientation="vertical", padding=dp(16), spacing=dp(10))
+        bar = BoxLayout(spacing=dp(8), size_hint_y=None, height=dp(48))
+        back = Button(text="‹  Back", size_hint_x=None, width=dp(90), font_size=sp(15))
+        style_button(back)
+        back.bind(on_release=self.close)
+        self.list_title = lbl("", 16, TEXT, bold=True)
+        js = Button(text="JSON", size_hint_x=None, width=dp(76), font_size=sp(14))
+        style_button(js)
+        js.bind(on_release=self.open_json)
+        for w in (back, self.list_title, js):
+            bar.add_widget(w)
+        root.add_widget(bar)
+
+        chips = ScrollView(size_hint_y=None, height=dp(42), bar_width=0, do_scroll_y=False)
+        row = BoxLayout(size_hint_x=None, spacing=dp(8))
+        row.bind(minimum_width=row.setter("width"))
+        pick = Button(text="Pick images", size_hint_x=None, width=dp(120), font_size=sp(13), bold=True)
+        style_button(pick, ACCENT, ACCENT_DN, radius=12, fg=(1, 1, 1, 1))
+        pick.bind(on_release=lambda *_: self.app.pick_images(self.add_image_scenes))
+        row.add_widget(pick)
+        for name in TEMPLATES:
+            b = Button(text=f"+ {name}", size_hint_x=None, width=dp(30) + dp(9) * len(name), font_size=sp(13))
+            style_button(b, CARD2, ACCENT, radius=12)
+            b.bind(on_release=lambda _b, n=name: self.new_scene(n))
+            row.add_widget(b)
+        chips.add_widget(row)
+        root.add_widget(chips)
+
+        self.msg = lbl("", 12, MUTED, height=18)
+        root.add_widget(self.msg)
+
+        sv = ScrollView(do_scroll_x=False, bar_width=dp(3))
+        self.list_box = BoxLayout(orientation="vertical", spacing=dp(10), size_hint_y=None,
+                                  padding=(0, 0, 0, dp(30)))
+        self.list_box.bind(minimum_height=self.list_box.setter("height"))
+        sv.add_widget(self.list_box)
+        root.add_widget(sv)
+        scr.add_widget(root)
+        return scr
+
+    def notify(self, text, bad=False):
+        color = BAD if bad else GOOD
+        self.msg.text = f"[color={color}]{escape_markup(text)}[/color]"
+
+    def open(self, tid):
+        try:
+            data = json.loads(topics.topic_path(tid).read_text(encoding="utf-8"))
+            if not isinstance(data.get("scenes"), list):
+                data["scenes"] = []
+        except Exception as e:
+            return self.app.say(f"Can't open {tid}: {e}", "bad")
+        self.tid, self.data = tid, data
+        self.msg.text = ""
+        self.refresh_list()
+        self.app.go("scenes", "left")
+
+    def close(self, *_):
+        self._persist()
+        self.app.refresh_topics(select=self.tid)
+        self.app.go("home", "right")
+
+    def _sync_topic_fields(self):
+        for key, ti in self.topic_inputs.items():
+            val = ti.text.strip()
+            if val or key == "title":
+                self.data[key] = val or self.tid
+            else:
+                self.data.pop(key, None)
+
+    def _persist(self):
+        self._sync_topic_fields()
+        topics.topic_path(self.tid).write_text(
+            json.dumps(self.data, indent=2, ensure_ascii=False), encoding="utf-8")
+
+    def refresh_list(self):
+        self.list_title.text = escape_markup(str(self.data.get("title") or self.tid))
+        box = self.list_box
+        box.clear_widgets()
+        # topic details card
+        card = BoxLayout(orientation="vertical", padding=dp(12), spacing=dp(4),
+                         size_hint_y=None, height=dp(12 * 2 + len(TOPIC_FIELDS) * 78))
+        style_card(card, CARD, 16)
+        self.topic_inputs = {}
+        for key, label, hint in TOPIC_FIELDS:
+            card.add_widget(lbl(f"[b]{label.upper()}[/b]", 11, MUTED, height=20))
+            frame, ti = framed_input(str(self.data.get(key, "")), hint=hint)
+            card.add_widget(frame)
+            self.topic_inputs[key] = ti
+        box.add_widget(card)
+
+        scenes = self.data["scenes"]
+        box.add_widget(lbl(f"[b]SCENES  ({len(scenes)})[/b]", 11, MUTED, height=22))
+        if not scenes:
+            box.add_widget(lbl("No scenes yet. Tap “+ Title”, “+ Code”, “+ Text”… above.", 14, MUTED, height=40))
+        for i, sc in enumerate(scenes):
+            box.add_widget(self._row(i, sc))
+
+    def _row(self, i, sc):
+        label, color = KIND_INFO.get(sc.get("kind"), (str(sc.get("kind")), "8A90A0"))
+        row = BoxLayout(spacing=dp(6), size_hint_y=None, height=dp(78))
+        main = Button(
+            text=(f"[b]{i + 1}   [color={color}]{label}[/color][/b]\n"
+                  f"[size={int(sp(13))}][color=8A90A0]{escape_markup(summary(sc))}[/color][/size]"),
+            markup=True, halign="left", valign="middle", font_size=sp(16), padding_x=dp(14))
+        main.bind(size=lambda inst, s: setattr(inst, "text_size", (s[0] - dp(28), s[1])))
+        style_button(main, CARD, CARD2_ON, radius=14, border=(1, 1, 1, 0.08))
+        main.bind(on_release=lambda *_, i=i: self.open_form(i))
+        row.add_widget(main)
+        grid = GridLayout(cols=2, spacing=dp(4), size_hint_x=None, width=dp(92))
+        font = UIFONT if Path(UIFONT).is_file() else "Roboto"
+        for glyph, cb, tint in (("\u25b2", lambda *_, i=i: self.move(i, -1), None),
+                                ("\u25bc", lambda *_, i=i: self.move(i, 1), None),
+                                ("\u29c9", lambda *_, i=i: self.duplicate(i), None),
+                                ("\u2715", lambda *_, i=i: self.ask_delete(i), rgb("#FF6B6B"))):
+            b = Button(text=glyph, font_name=font, font_size=sp(15))
+            style_button(b, CARD2, CARD2_ON, radius=10, fg=tint or TEXT)
+            b.bind(on_release=cb)
+            grid.add_widget(b)
+        row.add_widget(grid)
+        return row
+
+    def move(self, i, d):
+        scenes, j = self.data["scenes"], i + d
+        if 0 <= j < len(scenes):
+            scenes[i], scenes[j] = scenes[j], scenes[i]
+            self._persist()
+            self.refresh_list()
+
+    def duplicate(self, i):
+        self.data["scenes"].insert(i + 1, copy.deepcopy(self.data["scenes"][i]))
+        self._persist()
+        self.refresh_list()
+        self.notify(f"Duplicated scene {i + 1}")
+
+    def ask_delete(self, i):
+        sc = self.data["scenes"][i]
+        label = KIND_INFO.get(sc.get("kind"), (sc.get("kind"), ""))[0]
+        confirm("Delete this scene?", f"Scene {i + 1} ({escape_markup(str(label))}) will be removed.",
+                "Delete", lambda: self._delete(i))
+
+    def _delete(self, i):
+        del self.data["scenes"][i]
+        self._persist()
+        self.refresh_list()
+        self.notify("Scene deleted")
+
+    def _insert_scene(self, sc):
+        scenes = self.data["scenes"]
+        if len(scenes) >= 2 and scenes[-1].get("kind") == "title" and sc.get("kind") != "title":
+            scenes.insert(len(scenes) - 1, sc)     # keep the closing title card last
+        else:
+            scenes.append(sc)
+
+    def add_image_scenes(self, paths):
+        for p in paths:
+            self._insert_scene({"kind": "image", "image": str(p), "fit": "cover",
+                                "caption": "", "narration": ""})
+        self._persist()
+        self.refresh_list()
+        self.notify(f"Added {len(paths)} image scene(s). Tap one to add a caption.")
+
+    def new_scene(self, template_name):
+        self.open_form(None, copy.deepcopy(TEMPLATES[template_name]))
+
+    # ------------------------------------------------------------ scene form
+    def _build_form(self):
+        scr = Screen(name="scene")
+        root = BoxLayout(orientation="vertical", padding=dp(16), spacing=dp(10))
+        bar = BoxLayout(spacing=dp(8), size_hint_y=None, height=dp(48))
+        cancel = Button(text="Cancel", size_hint_x=None, width=dp(90), font_size=sp(15))
+        style_button(cancel)
+        cancel.bind(on_release=lambda *_: self.app.go("scenes", "right"))
+        self.form_title = lbl("", 16, TEXT, bold=True, halign="center")
+        save = Button(text="Save", size_hint_x=None, width=dp(90), font_size=sp(15), bold=True)
+        style_button(save, ACCENT, ACCENT_DN, fg=(1, 1, 1, 1))
+        save.bind(on_release=self.save_form)
+        for w in (cancel, self.form_title, save):
+            bar.add_widget(w)
+        root.add_widget(bar)
+        sv = ScrollView(do_scroll_x=False, bar_width=dp(3))
+        self.form_box = BoxLayout(orientation="vertical", spacing=dp(8), size_hint_y=None,
+                                  padding=(0, 0, 0, dp(60)))
+        self.form_box.bind(minimum_height=self.form_box.setter("height"))
+        sv.add_widget(self.form_box)
+        root.add_widget(sv)
+        scr.add_widget(root)
+        return scr
+
+    def open_form(self, idx, template=None):
+        self.idx = idx
+        self.scene = copy.deepcopy(self.data["scenes"][idx]) if idx is not None else template
+        self.form_title.text = f"Scene {idx + 1}" if idx is not None else "New scene"
+        self._render_form()
+        self.app.go("scene", "left")
+
+    def _render_form(self):
+        box = self.form_box
+        box.clear_widgets()
+        self.inputs = {}
+        kind = self.scene.get("kind", "text")
+
+        box.add_widget(lbl("[b]SCENE TYPE[/b]", 11, MUTED, height=20))
+        sp_kind = Spinner(text=KIND_INFO.get(kind, (kind, ""))[0], values=[v[0] for v in KIND_INFO.values()],
+                          size_hint_y=None, height=dp(50), font_size=sp(16), option_cls=DarkOption)
+        style_button(sp_kind, CARD2, CARD2_ON, radius=12, border=(1, 1, 1, 0.10))
+        sp_kind.bind(text=self._on_kind)
+        box.add_widget(sp_kind)
+
+        for spec in FIELDS.get(kind, []) + [NARRATION]:
+            key, label, typ = spec[0], spec[1], spec[2]
+            extra = spec[3] if len(spec) > 3 else None
+            box.add_widget(lbl(f"[b]{label.upper()}[/b]", 11, MUTED, height=22))
+            value = _get(self.scene, key, "")
+            if typ == "line":
+                frame, w = framed_input(str(value))
+                box.add_widget(frame)
+            elif typ in ("multi", "mono"):
+                frame, w = framed_input(str(value), multiline=True, height=extra or 140, mono=(typ == "mono"))
+                box.add_widget(frame)
+            elif typ == "lines":
+                text = "\n".join(str(v) for v in value) if isinstance(value, list) else str(value)
+                frame, w = framed_input(text, multiline=True, height=extra or 140)
+                box.add_widget(frame)
+            elif typ == "choice":
+                w = Spinner(text=str(value or extra[0]), values=extra, size_hint_y=None, height=dp(50),
+                            font_size=sp(16), option_cls=DarkOption)
+                style_button(w, CARD2, CARD2_ON, radius=12, border=(1, 1, 1, 0.10))
+                box.add_widget(w)
+            elif typ == "image":
+                w = self._image_field(box, str(value))
+            else:
+                continue
+            self.inputs[key] = (typ, w)
+
+    def _image_field(self, box, value):
+        row = BoxLayout(spacing=dp(8), size_hint_y=None, height=dp(54))
+        frame, ti = framed_input(value, hint="images/pic.png  or  /storage/emulated/0/...")
+        row.add_widget(frame)
+        pick = Button(text="Pick", size_hint_x=None, width=dp(84), font_size=sp(15), bold=True)
+        style_button(pick, ACCENT, ACCENT_DN, radius=12, fg=(1, 1, 1, 1))
+        pick.bind(on_release=lambda *_: self.app.pick_images(
+            lambda paths: setattr(ti, "text", str(paths[0])) if paths else None))
+        row.add_widget(pick)
+        box.add_widget(row)
+        preview = KImage(size_hint_y=None, height=dp(170), allow_stretch=True, keep_ratio=True)
+        box.add_widget(preview)
+
+        def update(*_):
+            t = ti.text.strip()
+            for cand in (Path(t), ROOT / t, Path("/storage/emulated/0/CodeReels") / t):
+                if t and cand.is_file():
+                    preview.source = str(cand)
+                    preview.height = dp(170)
+                    return
+            preview.source = ""
+            preview.height = 0
+        ti.bind(text=update)
+        update()
+        return ti
+
+    def _read(self, typ, w):
+        if typ == "lines":
+            return [l.strip() for l in w.text.split("\n") if l.strip()]
+        return w.text
+
+    def _collect(self):
+        sc = copy.deepcopy(self.scene)
+        for key, (typ, w) in self.inputs.items():
+            v = self._read(typ, w)
+            if key == "narration" or v not in ("", []):
+                _set(sc, key, v)
+            else:
+                _del(sc, key)
+        return sc
+
+    def _on_kind(self, spinner, text):
+        new_kind = LABEL_TO_KIND.get(text)
+        if not new_kind or new_kind == self.scene.get("kind"):
+            return
+        old = self._collect()
+        new = copy.deepcopy(TEMPLATES[KIND_TEMPLATE[new_kind]])
+        new["narration"] = old.get("narration", "")
+        if "heading" in new and old.get("title"):
+            new["heading"] = old["title"]
+        self.scene = new
+        from kivy.clock import Clock
+        Clock.schedule_once(lambda dt: self._render_form(), 0)
+
+    def save_form(self, *_):
+        sc = self._collect()
+        if self.idx is None:
+            self._insert_scene(sc)
+        else:
+            self.data["scenes"][self.idx] = sc
+        self._persist()
+        self.refresh_list()
+        self.notify("Scene saved")
+        self.app.go("scenes", "right")
+
+    # ------------------------------------------------------------ raw JSON (advanced)
+    def _build_json(self):
+        scr = Screen(name="json")
+        root = BoxLayout(orientation="vertical", padding=dp(16), spacing=dp(10))
+        bar = BoxLayout(spacing=dp(8), size_hint_y=None, height=dp(48))
+        back = Button(text="‹  Back", size_hint_x=None, width=dp(90), font_size=sp(15))
+        style_button(back)
+        back.bind(on_release=lambda *_: self.app.go("scenes", "right"))
+        bar.add_widget(back)
+        bar.add_widget(lbl("Advanced: raw JSON", 16, TEXT, bold=True))
+        save = Button(text="Save", size_hint_x=None, width=dp(90), font_size=sp(15), bold=True)
+        style_button(save, ACCENT, ACCENT_DN, fg=(1, 1, 1, 1))
+        save.bind(on_release=self.save_json)
+        bar.add_widget(save)
+        root.add_widget(bar)
+        frame, self.json_input = framed_input("", multiline=True, height=400, mono=True)
+        frame.size_hint_y = 1
+        self.json_input.size_hint_y = 1
+        root.add_widget(frame)
+        self.json_msg = lbl("", 12, MUTED, height=20)
+        root.add_widget(self.json_msg)
+        scr.add_widget(root)
+        return scr
+
+    def open_json(self, *_):
+        self._sync_topic_fields()
+        self.json_input.text = json.dumps(self.data, indent=2, ensure_ascii=False)
+        self.json_msg.text = ""
+        self.app.go("json", "left")
+
+    def save_json(self, *_):
+        try:
+            data = json.loads(self.json_input.text)
+            if not isinstance(data, dict) or not isinstance(data.get("scenes"), list):
+                raise ValueError('needs a "scenes" list')
+        except Exception as e:
+            self.json_msg.text = f"[color={BAD}]Invalid JSON, not saved: {escape_markup(str(e))}[/color]"
+            return
+        self.data = data
+        self._persist()
+        self.refresh_list()
+        self.app.go("scenes", "right")
