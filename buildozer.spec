@@ -1,5 +1,5 @@
 [app]
-title = Code Reels
+title = Text 2 Reels
 package.name = Text2Reels
 package.domain = ph.aibalac
 source.dir = .
