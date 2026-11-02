@@ -1,4 +1,4 @@
-"""About tab + the editor that changes the text of the Home and About tabs."""
+"""About tab. Its text comes from content.json (only the app owner edits that file)."""
 from pathlib import Path
 
 from kivy.metrics import dp, sp
@@ -34,10 +34,6 @@ class AboutScreen:
         root = BoxLayout(orientation="vertical", padding=dp(16), spacing=dp(10))
         bar = BoxLayout(spacing=dp(8), size_hint_y=None, height=dp(52))
         bar.add_widget(lbl("[b]About[/b]", 24, TEXT, height=52))
-        edit = Button(text="Edit text", size_hint_x=None, width=dp(110), font_size=sp(14), bold=True)
-        style_button(edit, CARD2, CARD2_ON, radius=14, border=(1, 1, 1, 0.10))
-        edit.bind(on_release=lambda *_: self.app.content_ui.open())
-        bar.add_widget(edit)
         root.add_widget(bar)
         sv, self.box = scroll_column(spacing=12, padding=(0, 0, 0, dp(20)))
         root.add_widget(sv)
@@ -96,8 +92,6 @@ class AboutScreen:
         self._section("CREDITS", [A.get("credits")])
         if A.get("footer"):
             box.add_widget(auto_label(_esc(A["footer"]), 13, MUTED, halign="center"))
-        box.add_widget(auto_label("To change any text on this page or on Home, tap Edit text.",
-                                  11, MUTED, halign="center"))
 
     def _section(self, title, lines, raw=False):
         lines = [l for l in lines if l and str(l).strip()]
@@ -108,112 +102,3 @@ class AboutScreen:
         for l in lines:
             card.add_widget(auto_label(l if raw else _esc(l), 15, TEXT))
         self.box.add_widget(card)
-
-
-HOME_FIELDS = [
-    ("home.title", "App title (big, at the top of Home)", "line"),
-    ("home.tagline", "Tagline under the title", "line"),
-    ("home.tip", "Tip card on Home (leave empty to hide it)", "multi"),
-    ("home.topics_label", "Heading above your videos", "line"),
-    ("home.empty_title", "Title when there are no videos", "line"),
-    ("home.empty_text", "Text when there are no videos", "multi"),
-    ("home.empty_button", "Button when there are no videos", "line"),
-    ("home.render_button", "Render button text", "line"),
-    ("tabs.home", "Tab name 1", "line"),
-    ("tabs.editor", "Tab name 2", "line"),
-    ("tabs.about", "Tab name 3", "line"),
-]
-ABOUT_FIELDS = [
-    ("about.app_name", "App name", "line"),
-    ("about.version", "Version", "line"),
-    ("about.tagline", "Tagline", "line"),
-    ("about.description", "Description", "multi"),
-    ("about.features", "Features (one per line)", "lines"),
-    ("about.how_to", "How it works (one step per line)", "lines"),
-    ("about.author", "Your name", "line"),
-    ("about.email", "Contact email", "line"),
-    ("about.website", "Website", "line"),
-    ("about.links", "More links (one per line:  Label | https://...)", "lines"),
-    ("about.privacy", "Privacy note", "multi"),
-    ("about.credits", "Credits and licences", "multi"),
-    ("about.footer", "Footer line", "line"),
-]
-
-
-class ContentEditor:
-    """Form for every text on Home and About. Saved in the phone's data folder."""
-
-    def __init__(self, app):
-        self.app = app
-        self.inputs = {}
-        self.scr = self._build()
-
-    def screens(self):
-        return [self.scr]
-
-    def _build(self):
-        scr = Screen(name="content")
-        root = BoxLayout(orientation="vertical", padding=dp(16), spacing=dp(10))
-        bar = BoxLayout(spacing=dp(8), size_hint_y=None, height=dp(48))
-        cancel = Button(text="Cancel", size_hint_x=None, width=dp(90), font_size=sp(15))
-        style_button(cancel)
-        cancel.bind(on_release=lambda *_: self.app.go("about", "right"))
-        bar.add_widget(cancel)
-        bar.add_widget(lbl("Edit Home & About", 16, TEXT, bold=True, halign="center"))
-        save = Button(text="Save", size_hint_x=None, width=dp(90), font_size=sp(15), bold=True)
-        style_button(save, ACCENT, ACCENT_DN, fg=(1, 1, 1, 1))
-        save.bind(on_release=self.save)
-        bar.add_widget(save)
-        root.add_widget(bar)
-        sv, self.box = scroll_column(spacing=6, padding=(0, 0, 0, dp(90)))
-        root.add_widget(sv)
-        scr.add_widget(root)
-        return scr
-
-    def open(self):
-        C = content.load()
-        box = self.box
-        box.clear_widgets()
-        self.inputs = {}
-        box.add_widget(auto_label("Change any text, then press Save. Changes stay on your phone and "
-                                  "survive app updates. Empty boxes hide that part of the page.",
-                                  12, MUTED))
-        for title, fields in (("HOME TAB", HOME_FIELDS), ("ABOUT TAB", ABOUT_FIELDS)):
-            box.add_widget(lbl(f"[b]{title}[/b]", 13, ACCENT, height=34))
-            for key, label, typ in fields:
-                box.add_widget(lbl(f"[b]{label.upper()}[/b]", 10, MUTED, height=22))
-                value = content.get_in(C, key, "")
-                if typ == "line":
-                    frame, ti = framed_input(str(value))
-                elif typ == "multi":
-                    frame, ti = framed_input(str(value), multiline=True, height=120)
-                else:
-                    text = "\n".join(str(v) for v in value) if isinstance(value, list) else str(value)
-                    frame, ti = framed_input(text, multiline=True, height=150)
-                box.add_widget(frame)
-                self.inputs[key] = (typ, ti)
-        reset = Button(text="Reset all text to the defaults", size_hint_y=None, height=dp(48), font_size=sp(14))
-        style_button(reset, rgb_red(), rgb_red(0.7), radius=12, fg=(1, 1, 1, 1))
-        reset.bind(on_release=lambda *_: confirm(
-            "Reset text?", "Home and About go back to the text that came with the app.",
-            "Reset", self._reset))
-        box.add_widget(reset)
-        self.app.go("content", "left")
-
-    def save(self, *_):
-        values = {}
-        for key, (typ, ti) in self.inputs.items():
-            values[key] = ([l.strip() for l in ti.text.split("\n") if l.strip()]
-                           if typ == "lines" else ti.text.strip())
-        content.save_changes(values)
-        self.app.apply_content()
-        self.app.go("about", "right")
-
-    def _reset(self):
-        content.reset()
-        self.app.apply_content()
-        self.app.go("about", "right")
-
-
-def rgb_red(k=1.0):
-    return (0.9 * k, 0.28 * k, 0.30 * k, 1)

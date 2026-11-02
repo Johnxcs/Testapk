@@ -1,13 +1,12 @@
 """Text shown on the Home and About tabs.
 
-Three layers, later ones win:  built-in defaults  <  content.json (shipped with the app)
-<  content_user.json in the app data folder (what you save from the in-app editor).
+Two layers, the later one wins:  built-in defaults  <  content.json (shipped inside the app).
+Only the app owner changes the text, by editing content.json before building the APK.
+Users of the app cannot change it.
 """
 import copy
 import json
 from pathlib import Path
-
-from . import settings
 
 ROOT = Path(__file__).resolve().parent.parent
 
@@ -40,16 +39,12 @@ def _read(path):
         return {}
 
 
-def user_file() -> Path:
-    return settings.data_dir() / "content_user.json"
-
-
 def defaults() -> dict:
     return _merge(BUILTIN, _read(ROOT / "content.json"))
 
 
 def load() -> dict:
-    return _merge(defaults(), _read(user_file()))
+    return defaults()
 
 
 def get(path, default=""):
@@ -67,34 +62,6 @@ def get_in(d, path, default=""):
             return default
         d = d[part]
     return d
-
-
-def set_in(d, path, value):
-    parts = path.split(".")
-    for part in parts[:-1]:
-        d = d.setdefault(part, {})
-    d[parts[-1]] = value
-
-
-def save_changes(values: dict):
-    """values: {'home.title': 'x', ...}. Only differences from the shipped defaults are stored."""
-    base, user = defaults(), {}
-    for path, v in values.items():
-        if v != get_in(base, path, None):
-            set_in(user, path, v)
-    f = user_file()
-    if user:
-        f.parent.mkdir(parents=True, exist_ok=True)
-        f.write_text(json.dumps(user, indent=2, ensure_ascii=False), encoding="utf-8")
-    elif f.exists():
-        f.unlink()
-
-
-def reset():
-    try:
-        user_file().unlink(missing_ok=True)
-    except Exception:
-        pass
 
 
 def parse_links(lines):

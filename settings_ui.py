@@ -131,12 +131,6 @@ class SettingsScreen:
         music.add_widget(lbl("Turn music on or off with the Music box on the home screen.", 11, MUTED, height=18))
         self._fit(music)
 
-        txt = self._card(box, "APP TEXT")
-        eb = Button(text="Edit Home & About text", size_hint_y=None, height=dp(46), font_size=sp(15))
-        style_button(eb, CARD2, CARD2_ON, radius=12, border=(1, 1, 1, 0.10))
-        eb.bind(on_release=lambda *_: self.app.content_ui.open())
-        txt.add_widget(eb)
-        self._fit(txt)
         return scr
 
     def _card(self, box, title):

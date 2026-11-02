@@ -31,7 +31,7 @@ from kivy.utils import escape_markup
 
 from src import content, settings, topics
 from scene_editor import SceneEditor
-from about_ui import AboutScreen, ContentEditor
+from about_ui import AboutScreen
 from settings_ui import SettingsScreen
 
 IS_ANDROID = "ANDROID_ARGUMENT" in os.environ or "ANDROID_BOOTLOGO" in os.environ
@@ -222,8 +222,7 @@ class ReelsApp(App):
         for scr in self.settings_ui.screens():
             self.sm.add_widget(scr)
         self.about_ui = AboutScreen(self)
-        self.content_ui = ContentEditor(self)
-        for scr in self.about_ui.screens() + self.content_ui.screens():
+        for scr in self.about_ui.screens():
             self.sm.add_widget(scr)
         self.apply_content()
         self.refresh_options()
@@ -333,7 +332,7 @@ class ReelsApp(App):
         scr.add_widget(outer)
         return scr
 
-    # ---------- Home / About text (content.json) ----------
+    # ---------- Home / About text: read from content.json (the owner edits that file) ----------
     def _render_label(self):
         return f"[b]{escape_markup(content.get('home.render_button') or 'Render video')}[/b]"
 
@@ -362,8 +361,7 @@ class ReelsApp(App):
 
     TAB_ORDER = ("home", "editor", "about")
     SCREEN_TAB = {"home": "home", "settings": "home", "musiccheck": "home", "scenes": "editor",
-                  "scene": "editor", "json": "editor", "paste": "editor", "about": "about",
-                  "content": "about"}
+                  "scene": "editor", "json": "editor", "paste": "editor", "about": "about"}
 
     def go_tab(self, key):
         cur = self.SCREEN_TAB.get(self.sm.current, "home")
