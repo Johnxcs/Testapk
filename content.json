@@ -5,7 +5,7 @@
     "about": "About"
   },
   "home": {
-    "title": "Code Reels",
+    "title": "Text 2 Reels",
     "tagline": "Videos with voice-over, captions and music",
     "tip": "Tip: tap New to name a video, then open the Editor tab to add scenes or paste a script.",
     "topics_label": "YOUR VIDEOS",
@@ -15,7 +15,7 @@
     "render_button": "Render video"
   },
   "about": {
-    "app_name": "Code Reels",
+    "app_name": "Text 2 Reels",
     "version": "1.0",
     "tagline": "Turn your script into a short video",
     "description": "Code Reels turns text into short vertical videos with a typing animation, voice-over, captions and background music. Write your script, press Render, and share the result.",
@@ -33,8 +33,8 @@
       "Press Render video",
       "Find your video in the CodeReels folder"
     ],
-    "author": "Your name here",
-    "email": "",
+    "author": "John Michael Calabia",
+    "email": "calabiajohnmichaelb@gmail.com",
     "website": "",
     "links": ["GitHub | https://github.com/Johnxcs"],
     "privacy": "Your videos, scripts and settings stay on your phone. The only time anything is sent online is when you tap Check online in the music check, which sends a 20-second clip to the AudD service.",

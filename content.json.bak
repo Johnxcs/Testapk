@@ -1,0 +1,44 @@
+{
+  "tabs": {
+    "home": "Home",
+    "editor": "Editor",
+    "about": "About"
+  },
+  "home": {
+    "title": "Code Reels",
+    "tagline": "Videos with voice-over, captions and music",
+    "tip": "Tip: tap New to name a video, then open the Editor tab to add scenes or paste a script.",
+    "topics_label": "YOUR VIDEOS",
+    "empty_title": "Make your first video",
+    "empty_text": "Write your own script. Tap New, name your video, then add scenes one by one or paste a whole script.",
+    "empty_button": "+  New video",
+    "render_button": "Render video"
+  },
+  "about": {
+    "app_name": "Code Reels",
+    "version": "1.0",
+    "tagline": "Turn your script into a short video",
+    "description": "Code Reels turns text into short vertical videos with a typing animation, voice-over, captions and background music. Write your script, press Render, and share the result.",
+    "features": [
+      "Typing-code, text, bullet, steps, quote, compare, stat and image scenes",
+      "Voice-over from your phone's own voices",
+      "Captions with word highlighting",
+      "Background music with a copyright check",
+      "Works offline (only the optional music check uses the internet)"
+    ],
+    "how_to": [
+      "On Home, tap New and name your video",
+      "Open the Editor tab and add scenes, or paste a script",
+      "Pick captions or music if you want them",
+      "Press Render video",
+      "Find your video in the CodeReels folder"
+    ],
+    "author": "Your name here",
+    "email": "",
+    "website": "",
+    "links": ["GitHub | https://github.com/Johnxcs"],
+    "privacy": "Your videos, scripts and settings stay on your phone. The only time anything is sent online is when you tap Check online in the music check, which sends a 20-second clip to the AudD service.",
+    "credits": "Built with Python and Kivy. Icons and text use the DejaVu Sans font (free licence).",
+    "footer": "Made with care"
+  }
+}
