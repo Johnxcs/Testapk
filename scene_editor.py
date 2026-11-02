@@ -266,10 +266,11 @@ class SceneEditor:
 
     def _row(self, i, sc, start=0.0, dur=0.0, real=False):
         label, color = KIND_INFO.get(sc.get("kind"), (str(sc.get("kind")), "8A90A0"))
+        when = f"{dur:.1f}s real" if real else f"\u2248 {dur:.1f}s"
         row = BoxLayout(spacing=dp(6), size_hint_y=None, height=dp(78))
         main = Button(
             text=(f"[b]{i + 1}   [color={color}]{label}[/color][/b]"
-                  f"   [size={int(sp(13))}][color=8A90A0]{estimate.fmt(start)}  \u00b7  {"" if real else "\u2248 "}{dur:.1f}s{" real" if real else ""}[/color][/size]\n"
+                  f"   [size={int(sp(13))}][color=8A90A0]{estimate.fmt(start)}  \u00b7  {when}[/color][/size]\n"
                   f"[size={int(sp(13))}][color=8A90A0]{escape_markup(summary(sc))}[/color][/size]"),
             markup=True, halign="left", valign="middle", font_size=sp(16), padding_x=dp(14))
         main.bind(size=lambda inst, s: setattr(inst, "text_size", (s[0] - dp(28), s[1])))
