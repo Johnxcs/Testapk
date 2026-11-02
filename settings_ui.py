@@ -14,9 +14,9 @@ from kivy.uix.togglebutton import ToggleButton
 from kivy.utils import escape_markup
 
 from scene_editor import DarkOption
-from src import settings
+from src import music_check, settings
 from src.theme import THEMES
-from ui_kit import (ACCENT, ACCENT_DN, BAD, CARD, CARD2, CARD2_ON, GOOD, MUTED, TEXT,
+from ui_kit import (MUTED_HEX, ACCENT, ACCENT_DN, BAD, CARD, CARD2, CARD2_ON, GOOD, MUTED, TEXT, confirm,
                     framed_input, lbl, style_button, style_card)
 
 LAYOUTS = {"Vertical 9:16": "vertical", "Horizontal 16:9": "horizontal"}
@@ -38,9 +38,13 @@ class SettingsScreen:
         self._building = False
         self._dirty = set()
         self.scr = self._build()
+        self.check = MusicCheck(app, self)
 
     def screen(self):
         return self.scr
+
+    def screens(self):
+        return [self.scr, self.check.scr]
 
     # ------------------------------------------------------------------ build
     def _build(self):
@@ -118,6 +122,12 @@ class SettingsScreen:
         row.add_widget(pick)
         row.add_widget(clear)
         music.add_widget(row)
+        self.lic_lbl = lbl("", 12, MUTED, height=20)
+        music.add_widget(self.lic_lbl)
+        chk = Button(text="Check copyright / change licence", size_hint_y=None, height=dp(44), font_size=sp(14))
+        style_button(chk, CARD2, CARD2_ON, radius=12, border=(1, 1, 1, 0.10))
+        chk.bind(on_release=self.recheck_music)
+        music.add_widget(chk)
         self.vol_lbl = lbl("", 12, MUTED, height=20)
         music.add_widget(self.vol_lbl)
         self.vol_sl = self._slider(music, 5, 50, 1, 15)
@@ -209,6 +219,9 @@ class SettingsScreen:
         self._vol_label()
         mp = S.get("music_path", "")
         self.music_lbl.text = escape_markup(S.get("music_name") or Path(mp).name) if mp else "No song chosen"
+        lic = S.get("music_license")
+        self.lic_lbl.text = (f"Licence: {escape_markup(music_check.LICENSES[lic])}" if lic in music_check.LICENSES
+                             else ("Not checked yet. Music stays off until you choose a licence." if mp else ""))
         self._building = False
 
     def _changed(self, key):
@@ -331,9 +344,198 @@ class SettingsScreen:
         if not paths:
             return
         settings.update(music_path=str(paths[0]), music_name=(names[0] if names else Path(paths[0]).name),
-                        music_enabled=True)
+                        music_enabled=None, music_license=None, music_credit=None)
         self._load()
+        self.check.open(paths[0], names[0] if names else Path(paths[0]).name)
+
+    def recheck_music(self, *_):
+        S = settings.load()
+        mp = S.get("music_path")
+        if not mp or not Path(mp).is_file():
+            return
+        self.check.open(mp, S.get("music_name") or Path(mp).name)
 
     def clear_music(self, *_):
-        settings.update(music_path=None, music_name=None, music_enabled=None)
+        S = settings.load()
+        mp = S.get("music_path")
+        settings.update(music_path=None, music_name=None, music_enabled=None,
+                        music_license=None, music_credit=None)
+        try:
+            if mp and Path(mp).parent == settings.data_dir() / "music":
+                Path(mp).unlink(missing_ok=True)
+        except Exception:
+            pass
         self._load()
+
+
+class MusicCheck:
+    """Shown after you pick a song: what the file says, optional online check, licence."""
+
+    def __init__(self, app, owner):
+        self.app, self.owner = app, owner
+        self.path, self.name, self.risk, self.credit_hint = None, "", "unknown", ""
+        self.scr = self._build()
+
+    def _build(self):
+        scr = Screen(name="musiccheck")
+        root = BoxLayout(orientation="vertical", padding=dp(16), spacing=dp(10))
+        bar = BoxLayout(spacing=dp(8), size_hint_y=None, height=dp(48))
+        cancel = Button(text="Remove", size_hint_x=None, width=dp(90), font_size=sp(15))
+        style_button(cancel)
+        cancel.bind(on_release=self.cancel)
+        bar.add_widget(cancel)
+        bar.add_widget(lbl("Check this song", 16, TEXT, bold=True, halign="center"))
+        self.use_btn = Button(text="Use", size_hint_x=None, width=dp(90), font_size=sp(15), bold=True)
+        style_button(self.use_btn, ACCENT, ACCENT_DN, fg=(1, 1, 1, 1))
+        self.use_btn.bind(on_release=self.use)
+        bar.add_widget(self.use_btn)
+        root.add_widget(bar)
+
+        sv = ScrollView(do_scroll_x=False, bar_width=dp(3))
+        box = BoxLayout(orientation="vertical", spacing=dp(10), size_hint_y=None, padding=(0, 0, 0, dp(40)))
+        box.bind(minimum_height=box.setter("height"))
+        sv.add_widget(box)
+        root.add_widget(sv)
+        scr.add_widget(root)
+
+        info = self.owner._card(box, "WHAT THE FILE SAYS")
+        self.info_card = info
+        self.file_lbl = lbl("", 14, TEXT, bold=True, height=24)
+        info.add_widget(self.file_lbl)
+        self.tags_lbl = lbl("", 13, MUTED, height=100)
+        info.add_widget(self.tags_lbl)
+        self.verdict = lbl("", 14, TEXT, height=96)
+        info.add_widget(self.verdict)
+        self.owner._fit(info)
+
+        online = self.owner._card(box, "ONLINE CHECK  (optional)")
+        online.add_widget(lbl("Matches a short clip against a database of released songs (AudD). "
+                              "Needs internet and a free token from audd.io.", 12, MUTED, height=52))
+        frame, self.token_in = framed_input(settings.load().get("audd_token", ""), hint="AudD API token")
+        online.add_widget(frame)
+        self.check_btn = Button(text="Check online", size_hint_y=None, height=dp(46), font_size=sp(15))
+        style_button(self.check_btn, CARD2, CARD2_ON, radius=12, border=(1, 1, 1, 0.10))
+        self.check_btn.bind(on_release=self.run_online)
+        online.add_widget(self.check_btn)
+        self.online_lbl = lbl("", 13, MUTED, height=76)
+        online.add_widget(self.online_lbl)
+        online.add_widget(lbl("No match does not mean the song is free. Platforms run their own checks.",
+                              11, MUTED, height=30))
+        self.owner._fit(online)
+
+        lic = self.owner._card(box, "YOUR LICENCE  (required)")
+        lic.add_widget(lbl("Why can you use this song in your videos?", 13, TEXT, height=24))
+        self.lic_sp = _spinner(list(music_check.LICENSES.values()), "Choose…")
+        self.lic_sp.bind(text=self._lic_changed)
+        lic.add_widget(self.lic_sp)
+        self.credit_frame, self.credit_in = framed_input("", hint="Credit line, e.g. Music: Title by Artist")
+        lic.add_widget(self.credit_frame)
+        lic.add_widget(lbl(f"Free sources: {music_check.FREE_SOURCES}.", 11, MUTED, height=34))
+        self.lic_note = lbl("", 12, MUTED, height=44)
+        lic.add_widget(self.lic_note)
+        self.owner._fit(lic)
+        return scr
+
+    # ---------------------------------------------------------------- flow
+    def open(self, path, name):
+        self.path, self.name = Path(path), name
+        S = settings.load()
+        tags = music_check.read_tags(self.path)
+        res = music_check.assess(tags, name)
+        self.risk, self.credit_hint = res["risk"], res["credit"]
+        self.file_lbl.text = escape_markup(name)
+        order = ("title", "artist", "album", "year", "copyright", "publisher", "isrc")
+        shown = [f"{k.capitalize()}: {tags[k]}" for k in order if tags.get(k)]
+        self.tags_lbl.text = escape_markup("\n".join(shown)) if shown else "No tags found in the file."
+        color, head = {
+            "likely": (BAD, "Looks like a commercial song, so it is probably copyrighted."),
+            "possible": ("FFB86C", "May be a commercial song. Be careful."),
+            "free_hint": (GOOD, "The tags mention a free or Creative Commons licence. Read the licence."),
+            "unknown": (MUTED_HEX, "Can't tell from the tags."),
+        }[self.risk]
+        why = "\n".join("\u2022 " + r for r in res["reasons"])
+        self.verdict.text = f"[b][color={color}]{head}[/color][/b]\n{escape_markup(why)}"
+        # grow the labels to fit their text, then re-measure the card
+        est = lambda t, n=38: sum(len(x) // n + 1 for x in t.split("\n"))
+        self.tags_lbl.height = dp(20) * max(1, est("\n".join(shown) or "x")) + dp(6)
+        self.verdict.height = dp(20) * (est(head, 34) + est(why)) + dp(10)
+        self.owner._fit(self.info_card)
+        self.token_in.text = S.get("audd_token", "")
+        self.online_lbl.text = ""
+        self.lic_sp.text = music_check.LICENSES.get(S.get("music_license"), "Choose…")
+        self.credit_in.text = S.get("music_credit") or (self.credit_hint if self.risk == "free_hint" else "")
+        self._lic_changed()
+        self.app.go("musiccheck", "left")
+
+    def _key(self):
+        return next((k for k, v in music_check.LICENSES.items() if v == self.lic_sp.text), None)
+
+    def _lic_changed(self, *_):
+        key = self._key()
+        self.credit_frame.opacity = 1 if key == "cc" else 0
+        self.credit_frame.height = dp(54) if key == "cc" else 0
+        if key == "cc" and not self.credit_in.text.strip():
+            self.credit_in.text = self.credit_hint
+        self.lic_note.text = {
+            "own": "Great. Keep proof that it's yours (project files, original recording).",
+            "licensed": "Keep the licence or receipt. Some licences limit monetising.",
+            "cc": "Read the licence. Most need the credit line below in your description.",
+            "copyrighted": "[color=FF6B6B]Platforms may mute, block or claim the video. Not recommended.[/color]",
+            "unsure": "If you're not sure, don't use it. Pick a song from a free source above.",
+        }.get(key, "")
+        self.use_btn.disabled = key not in settings.LICENSE_KEYS
+
+    def run_online(self, *_):
+        token = self.token_in.text.strip()
+        if not token:
+            self.online_lbl.text = f"[color={BAD}]Paste your AudD token first.[/color]"
+            return
+        settings.update(audd_token=token)
+        self.check_btn.disabled = True
+        self.online_lbl.text = "Checking… this can take up to a minute."
+
+        def work():
+            try:
+                res = music_check.online_check(self.path, token, settings.data_dir())
+                if res:
+                    msg = (f"[b][color={BAD}]Match found:[/color][/b] {escape_markup(res['title'])} \u2014 "
+                           f"{escape_markup(res['artist'])}\n{escape_markup(res['album'])} "
+                           f"{escape_markup(res['label'])}\nThis is a released song.")
+                    self.risk = "likely"
+                else:
+                    msg = "No match found. This does not prove it is safe."
+            except BaseException as e:
+                msg = f"[color={BAD}]Couldn't check: {escape_markup(str(e))}[/color]"
+            Clock.schedule_once(lambda dt: self._online_done(msg), 0)
+        threading.Thread(target=work, daemon=True).start()
+
+    def _online_done(self, msg):
+        self.check_btn.disabled = False
+        self.online_lbl.text = msg
+
+    def use(self, *_):
+        key = self._key()
+        if key not in settings.LICENSE_KEYS:
+            return
+        credit = self.credit_in.text.strip()
+        if key == "cc" and not credit:
+            self.lic_note.text = f"[color={BAD}]Add the credit line first.[/color]"
+            return
+        if self.risk in ("likely", "possible") and key in ("own", "licensed"):
+            confirm("Double-check", "This file looks like a released song. Only continue if you really "
+                    "own it or hold a licence that covers videos.", "I have the rights",
+                    lambda: self._save(key, credit), danger=False)
+        else:
+            self._save(key, credit)
+
+    def _save(self, key, credit):
+        settings.update(music_license=key, music_credit=(credit if key == "cc" else None) or None,
+                        music_enabled=True, music_risk=self.risk)
+        self.owner._load()
+        self.app.refresh_options()
+        self.app.go("settings", "right")
+
+    def cancel(self, *_):
+        self.owner.clear_music()
+        self.app.refresh_options()
+        self.app.go("settings", "right")

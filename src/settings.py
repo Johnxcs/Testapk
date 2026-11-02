@@ -3,6 +3,7 @@ import json
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
+LICENSE_KEYS = ("own", "licensed", "cc", "copyrighted")      # "unsure" never enables music
 RESOLUTIONS = {"vertical": [1080, 1920], "horizontal": [1920, 1080]}
 _data = None
 
@@ -66,6 +67,8 @@ def render_overrides(S=None) -> dict:
         o["voice"] = voice
     o["captions"] = bool(S.get("captions"))
     mp = S.get("music_path")
-    if S.get("music_enabled") and mp and Path(mp).is_file():
-        o["music"] = {"path": mp, "volume": float(S.get("music_volume", 0.15))}
+    if S.get("music_enabled") and mp and Path(mp).is_file() and S.get("music_license") in LICENSE_KEYS:
+        o["music"] = {"path": mp, "volume": float(S.get("music_volume", 0.15)),
+                      "license": S["music_license"], "credit": S.get("music_credit") or "",
+                      "name": S.get("music_name") or Path(mp).name}
     return o

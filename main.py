@@ -218,7 +218,8 @@ class ReelsApp(App):
         for scr in self.editor_ui.screens():
             self.sm.add_widget(scr)
         self.settings_ui = SettingsScreen(self)
-        self.sm.add_widget(self.settings_ui.screen())
+        for scr in self.settings_ui.screens():
+            self.sm.add_widget(scr)
         self.refresh_topics()
         self.refresh_options()
         keep_screen_on()
@@ -331,7 +332,7 @@ class ReelsApp(App):
         """Sync the Captions / Music boxes with settings.json."""
         S = settings.load()
         mp = S.get("music_path") or ""
-        has = bool(mp) and Path(mp).is_file()
+        has = bool(mp) and Path(mp).is_file() and S.get("music_license") in settings.LICENSE_KEYS
         self._opt_busy = True
         self.cap_cb.active = bool(S.get("captions"))
         self.music_cb.disabled = not has
@@ -544,9 +545,16 @@ class ReelsApp(App):
             out = output_dir()
             overrides = {**settings.render_overrides(), "fps": fps, "out": str(out), "no_audio": silent}
             mp4 = Path(render_topic(tid, cfg, overrides))
+            note = ""
+            m = overrides.get("music")
+            if m and not silent:
+                if m["license"] == "copyrighted":
+                    note = "  Heads up: copyrighted music may get muted or claimed."
+                elif m["license"] == "cc":
+                    note = "  Credit line saved in music_credits.txt."
             if out == SHARED_DIR:
                 scan_file(mp4)
-                self.say(f"Done. Saved to CodeReels/{mp4.parent.name}/{mp4.name}", "good")
+                self.say(f"Done. Saved to CodeReels/{mp4.parent.name}/{mp4.name}.{note}", "good")
             elif publish_to_gallery(mp4, f"{tid}.mp4"):
                 self.say(f"Done. Saved to Movies/CodeReels/{tid}.mp4", "good")
             else:

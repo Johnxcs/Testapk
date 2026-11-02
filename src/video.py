@@ -181,6 +181,7 @@ def render_topic(topic_id, cfg, overrides):
         try:
             music_mod.mix_into(track, music["path"], music.get("volume", 0.15), audio_dir)
             print("  background music: mixed in")
+            _music_notes(out_dir, music)
         except Exception as e:
             print(f"  (music skipped: {e})")
 
@@ -208,6 +209,25 @@ def render_topic(topic_id, cfg, overrides):
     _write_transcript(out_dir, topic, scenes, timings, fps, engine)
     print(f"  done -> {out_mp4}")
     return out_mp4
+
+
+def _music_notes(out_dir, music):
+    """Write music_credits.txt and warn about copyrighted / credit-required songs."""
+    from .music_check import LICENSES
+    lic = music.get("license")
+    lines = ["Background music", f"File: {music.get('name') or Path(music['path']).name}",
+             f"Licence: {LICENSES.get(lic, 'not specified (check you have the rights)')}"]
+    if music.get("credit"):
+        lines += ["", "Credit line for your video description:", music["credit"]]
+    if lic == "copyrighted":
+        lines += ["", "WARNING: this song is copyrighted. YouTube, TikTok and Instagram may mute it,",
+                  "block the video or give the earnings to the owner."]
+        print("  WARNING: copyrighted music; platforms may mute, block or claim this video.")
+    elif lic == "cc":
+        print(f"  credit required: {music.get('credit') or '(add the artist name)'}")
+    elif lic is None:
+        print("  reminder: make sure you have the rights to use this music.")
+    (Path(out_dir) / "music_credits.txt").write_text("\n".join(lines) + "\n", encoding="utf-8")
 
 
 def _font(topic, cfg):
