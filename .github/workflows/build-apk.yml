@@ -35,7 +35,12 @@ jobs:
       - name: Show real error in Annotations
         if: failure()
         run: |
-          MSG=$( (grep -m2 -A12 "Error compiling Cython" build.log || tail -30 build.log) | cut -c1-160 | head -30 | sed 's/%/%25/g' | awk '{printf "%s%%0A", $0}')
+          # the real error sits just BEFORE buildozer's "Command failed" + environment dump
+          N=$(grep -n "Command failed" build.log | head -1 | cut -d: -f1)
+          if [ -z "$N" ]; then N=$(wc -l < build.log); fi
+          START=$((N > 45 ? N - 45 : 1))
+          MSG=$(sed -n "${START},${N}p" build.log | sed 's/\x1b\[[0-9;]*m//g' | cut -c1-170 \
+                | sed 's/%/%25/g' | awk '{printf "%s%%0A", $0}')
           echo "::error title=REAL ERROR (copy this)::$MSG"
       - uses: actions/upload-artifact@v4
         if: success()
