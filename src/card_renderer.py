@@ -87,13 +87,15 @@ def _count_text(value, p):
 
 
 class CardRenderer:
-    def __init__(self, w, h, fps, font_path, theme, cfg, footer="", base_dirs=()):
+    def __init__(self, w, h, fps, font_path, theme, cfg, footer="", base_dirs=(), captions=False):
         self.w, self.h = w, h
         self.theme = theme
         self.vertical = h > w
         self.pad = int(w * 0.08)
         self.top = int(h * (0.13 if self.vertical else 0.10))
         self.bottom = int(h * (0.80 if self.vertical else 0.90))
+        if captions:                      # keep clear of the caption strip
+            self.bottom = int(h * (0.62 if self.vertical else 0.74))
         self.mono = font_path
         self.footer = footer
         self.base_dirs = [Path(p) for p in base_dirs]

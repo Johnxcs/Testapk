@@ -35,7 +35,10 @@ def cmd_new(cfg, args):
 def cmd_render(cfg, args):
     from .video import render_topic
 
-    overrides = {"fps": args.fps, "out": args.out, "no_audio": args.no_audio}
+    overrides = {"fps": args.fps, "out": args.out, "no_audio": args.no_audio,
+                 "captions": args.captions}
+    if args.music:
+        overrides["music"] = {"path": args.music, "volume": args.music_volume}
     ids = topics.list_topics(args.topics_dir) if args.topic == "all" else [args.topic]
     if not ids:
         print("No topics found. Add one with:  python main.py new my-topic")
@@ -69,6 +72,9 @@ def build_parser():
     rp.add_argument("topic", help="topic id, or 'all'")
     rp.add_argument("--fps", type=int, default=None, help="override fps")
     rp.add_argument("--out", default=None, help="override output directory")
+    rp.add_argument("--captions", action="store_true", help="burn narration captions into the video")
+    rp.add_argument("--music", default=None, help="background music file (mp3/m4a/wav...)")
+    rp.add_argument("--music-volume", type=float, default=0.15, help="music volume 0..1 (default 0.15)")
     rp.add_argument("--no-audio", action="store_true",
                     help="skip TTS (silence + fast, no internet needed)")
     rp.set_defaults(func=cmd_render)

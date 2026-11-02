@@ -1,21 +1,26 @@
 """Form-based topic / scene editor (Kivy): lists scenes and edits each one with proper inputs."""
 import copy
 import json
+import threading
 from pathlib import Path
 
+from kivy.clock import Clock
 from kivy.metrics import dp, sp
 from kivy.uix.boxlayout import BoxLayout
 from kivy.uix.button import Button
+from kivy.uix.checkbox import CheckBox
 from kivy.uix.gridlayout import GridLayout
 from kivy.uix.image import Image as KImage
+from kivy.uix.popup import Popup
 from kivy.uix.screenmanager import Screen
 from kivy.uix.scrollview import ScrollView
 from kivy.uix.spinner import Spinner, SpinnerOption
 from kivy.uix.textinput import TextInput
 from kivy.utils import escape_markup
 
-from src import estimate, topics
-from src.config import load_config
+from src import estimate, render_info, settings, topics
+from src.config import DEFAULTS, load_config
+from src.script_import import script_to_scenes
 from src.narration import estimate_duration
 from src.scene_templates import TEMPLATES
 from ui_kit import (ACCENT, ACCENT_DN, BAD, CARD, CARD2, CARD2_ON, GOOD, MONO, MUTED, ROOT,
@@ -125,11 +130,11 @@ class SceneEditor:
         self.tid, self.data = None, {}
         try:
             self.cfg = load_config(str(ROOT / "config.json"))
-        except Exception:
-            self.cfg = {}
+        except BaseException:
+            self.cfg = copy.deepcopy(DEFAULTS)
         self.topic_inputs = {}
         self.idx, self.scene, self.inputs = None, {}, {}
-        self._screens = [self._build_list(), self._build_form(), self._build_json()]
+        self._screens = [self._build_list(), self._build_form(), self._build_json(), self._build_paste()]
 
     def screens(self):
         return self._screens
@@ -153,6 +158,10 @@ class SceneEditor:
         chips = ScrollView(size_hint_y=None, height=dp(42), bar_width=0, do_scroll_y=False)
         row = BoxLayout(size_hint_x=None, spacing=dp(8))
         row.bind(minimum_width=row.setter("width"))
+        paste = Button(text="Paste script", size_hint_x=None, width=dp(120), font_size=sp(13), bold=True)
+        style_button(paste, rgb("#2B6E54"), rgb("#1F5240"), radius=12, fg=(1, 1, 1, 1))
+        paste.bind(on_release=self.open_paste)
+        row.add_widget(paste)
         pick = Button(text="Pick images", size_hint_x=None, width=dp(120), font_size=sp(13), bold=True)
         style_button(pick, ACCENT, ACCENT_DN, radius=12, fg=(1, 1, 1, 1))
         pick.bind(on_release=lambda *_: self.app.pick_images(self.add_image_scenes))
@@ -228,32 +237,39 @@ class SceneEditor:
         box.add_widget(card)
 
         scenes = self.data["scenes"]
-        durs = estimate.scene_durations(scenes, self.cfg) if scenes else []
+        est = estimate.scene_durations(scenes, self.cfg) if scenes else []
+        info = render_info.load(self.tid)
+        actual = [info.get(render_info.scene_sig(sc)) for sc in scenes]
+        durs = [a if a else e for a, e in zip(actual, est)]
+        real = sum(1 for a in actual if a)
         total = sum(durs)
-        warn = "  ·  over 60s" if total > 60 else ""
+        warn = "  \u00b7  over 60s" if total > 60 else ""
         color = "FFB86C" if total > 60 else "3DDC97"
+        approx = "" if scenes and real == len(scenes) else "\u2248 "
         head = BoxLayout(size_hint_y=None, height=dp(40), padding=(dp(4), 0))
         head.add_widget(lbl(f"[b]SCENES  ({len(scenes)})[/b]", 11, MUTED, height=40))
-        total_lbl = lbl(f"[b][color={color}]\u2248 {estimate.fmt(total)}[/color][/b]  [color=8A90A0]total{warn}[/color]",
+        total_lbl = lbl(f"[b][color={color}]{approx}{estimate.fmt(total)}[/color][/b]  [color=8A90A0]total{warn}[/color]",
                         15, TEXT, height=40, halign="right")
         head.add_widget(total_lbl)
         box.add_widget(head)
         if scenes:
-            box.add_widget(lbl("Estimates. The exact length depends on the voice when you render.",
-                               11, MUTED, height=16))
+            note = ("Real lengths from your last render." if real == len(scenes) else
+                    f"{real} of {len(scenes)} scenes have a real length from your last render; the rest are estimates."
+                    if real else "Estimates. Render once to see the real lengths.")
+            box.add_widget(lbl(note, 11, MUTED, height=16))
         else:
             box.add_widget(lbl("No scenes yet. Tap “+ Title”, “+ Code”, “+ Text”… above.", 14, MUTED, height=40))
         start = 0.0
         for i, sc in enumerate(scenes):
-            box.add_widget(self._row(i, sc, start, durs[i]))
+            box.add_widget(self._row(i, sc, start, durs[i], bool(actual[i])))
             start += durs[i]
 
-    def _row(self, i, sc, start=0.0, dur=0.0):
+    def _row(self, i, sc, start=0.0, dur=0.0, real=False):
         label, color = KIND_INFO.get(sc.get("kind"), (str(sc.get("kind")), "8A90A0"))
         row = BoxLayout(spacing=dp(6), size_hint_y=None, height=dp(78))
         main = Button(
             text=(f"[b]{i + 1}   [color={color}]{label}[/color][/b]"
-                  f"   [size={int(sp(13))}][color=8A90A0]{estimate.fmt(start)}  \u00b7  {dur:.1f}s[/color][/size]\n"
+                  f"   [size={int(sp(13))}][color=8A90A0]{estimate.fmt(start)}  \u00b7  {"" if real else "\u2248 "}{dur:.1f}s{" real" if real else ""}[/color][/size]\n"
                   f"[size={int(sp(13))}][color=8A90A0]{escape_markup(summary(sc))}[/color][/size]"),
             markup=True, halign="left", valign="middle", font_size=sp(16), padding_x=dp(14))
         main.bind(size=lambda inst, s: setattr(inst, "text_size", (s[0] - dp(28), s[1])))
@@ -298,14 +314,18 @@ class SceneEditor:
         self.refresh_list()
         self.notify("Scene deleted")
 
+    @staticmethod
+    def _insert_index(scenes, sc):
+        """Keep a closing title card last."""
+        if len(scenes) >= 2 and scenes[-1].get("kind") == "title" and sc.get("kind") != "title":
+            return len(scenes) - 1
+        return len(scenes)
+
     def _insert_scene(self, sc):
         scenes = self.data["scenes"]
-        if len(scenes) >= 2 and scenes[-1].get("kind") == "title" and sc.get("kind") != "title":
-            scenes.insert(len(scenes) - 1, sc)     # keep the closing title card last
-        else:
-            scenes.append(sc)
+        scenes.insert(self._insert_index(scenes, sc), sc)
 
-    def add_image_scenes(self, paths):
+    def add_image_scenes(self, paths, names=None):
         for p in paths:
             self._insert_scene({"kind": "image", "image": str(p), "fit": "cover",
                                 "caption": "", "narration": ""})
@@ -331,6 +351,10 @@ class SceneEditor:
         for w in (cancel, self.form_title, save):
             bar.add_widget(w)
         root.add_widget(bar)
+        self.prev_btn = Button(text="\u25b6  Preview this scene", size_hint_y=None, height=dp(46), font_size=sp(15))
+        style_button(self.prev_btn, CARD2, CARD2_ON, radius=12, border=(1, 1, 1, 0.10))
+        self.prev_btn.bind(on_release=self.preview)
+        root.add_widget(self.prev_btn)
         sv = ScrollView(do_scroll_x=False, bar_width=dp(3))
         self.form_box = BoxLayout(orientation="vertical", spacing=dp(8), size_hint_y=None,
                                   padding=(0, 0, 0, dp(60)))
@@ -415,7 +439,7 @@ class SceneEditor:
         pick = Button(text="Pick", size_hint_x=None, width=dp(84), font_size=sp(15), bold=True)
         style_button(pick, ACCENT, ACCENT_DN, radius=12, fg=(1, 1, 1, 1))
         pick.bind(on_release=lambda *_: self.app.pick_images(
-            lambda paths: setattr(ti, "text", str(paths[0])) if paths else None))
+            lambda paths, names=None: setattr(ti, "text", str(paths[0])) if paths else None))
         row.add_widget(pick)
         box.add_widget(row)
         preview = KImage(size_hint_y=None, height=dp(170), allow_stretch=True, keep_ratio=True)
@@ -459,8 +483,47 @@ class SceneEditor:
         if "heading" in new and old.get("title"):
             new["heading"] = old["title"]
         self.scene = new
-        from kivy.clock import Clock
         Clock.schedule_once(lambda dt: self._render_form(), 0)
+
+    def preview(self, *_):
+        """Render one still frame of this scene (with your settings) and show it."""
+        sc = self._collect()
+        data = copy.deepcopy(self.data)
+        scenes = data["scenes"]
+        if self.idx is None:
+            i = self._insert_index(scenes, sc)
+            scenes.insert(i, sc)
+        else:
+            i = self.idx
+            scenes[i] = sc
+        self.prev_btn.disabled = True
+        self.prev_btn.text = "Rendering preview\u2026"
+        base = topics.TOPICS_DIR / f"{self.tid}.json"
+
+        def work():
+            try:
+                from src import video
+                img = video.preview_scene(data, i, self.cfg, settings.render_overrides(), self.tid, base)
+                img.thumbnail((960, 960))
+                out = settings.data_dir() / "preview.png"
+                img.save(out)
+                Clock.schedule_once(lambda dt: self._show_preview(str(out), ""), 0)
+            except BaseException as e:      # topics/video raise SystemExit with messages
+                Clock.schedule_once(lambda dt, m=str(e): self._show_preview("", m), 0)
+        threading.Thread(target=work, daemon=True).start()
+
+    def _show_preview(self, path, error):
+        self.prev_btn.disabled = False
+        self.prev_btn.text = "\u25b6  Preview this scene"
+        box = BoxLayout(orientation="vertical", padding=dp(10), spacing=dp(8))
+        style_card(box, CARD, 18)
+        if error:
+            box.add_widget(lbl(f"[color={BAD}]Couldn't make the preview: {escape_markup(error)}[/color]", 14, TEXT))
+        else:
+            box.add_widget(KImage(source=path, nocache=True, allow_stretch=True, keep_ratio=True))
+            box.add_widget(lbl("Estimated look. Tap outside to close.", 11, MUTED, height=18, halign="center"))
+        Popup(title="", separator_height=0, content=box, size_hint=(0.94, 0.92), background="",
+              background_color=(0, 0, 0, 0), overlay_color=(0, 0, 0, 0.7)).open()
 
     def save_form(self, *_):
         sc = self._collect()
@@ -471,6 +534,62 @@ class SceneEditor:
         self._persist()
         self.refresh_list()
         self.notify("Scene saved")
+        self.app.go("scenes", "right")
+
+    # ------------------------------------------------------------ paste a script
+    def _build_paste(self):
+        scr = Screen(name="paste")
+        root = BoxLayout(orientation="vertical", padding=dp(16), spacing=dp(10))
+        bar = BoxLayout(spacing=dp(8), size_hint_y=None, height=dp(48))
+        cancel = Button(text="Cancel", size_hint_x=None, width=dp(90), font_size=sp(15))
+        style_button(cancel)
+        cancel.bind(on_release=lambda *_: self.app.go("scenes", "right"))
+        bar.add_widget(cancel)
+        bar.add_widget(lbl("Paste script", 16, TEXT, bold=True, halign="center"))
+        add = Button(text="Add", size_hint_x=None, width=dp(90), font_size=sp(15), bold=True)
+        style_button(add, ACCENT, ACCENT_DN, fg=(1, 1, 1, 1))
+        add.bind(on_release=self.add_pasted)
+        bar.add_widget(add)
+        root.add_widget(bar)
+        root.add_widget(lbl("Blank line = new scene.  # heading   - bullets   1. steps   > quote   ``` code", 11, MUTED, height=28))
+        frame, self.paste_in = framed_input("", multiline=True, height=300,
+                                            hint="Paste your notes or script here\u2026")
+        frame.size_hint_y = 1
+        self.paste_in.size_hint_y = 1
+        self.paste_in.bind(text=self._paste_update)
+        root.add_widget(frame)
+        row = BoxLayout(spacing=dp(8), size_hint_y=None, height=dp(40))
+        self.paste_title = CheckBox(size_hint_x=None, width=dp(36), active=True, color=ACCENT)
+        self.paste_title.bind(active=self._paste_update)
+        row.add_widget(self.paste_title)
+        row.add_widget(lbl("Add a title card and a closing card", 14, TEXT, height=40))
+        root.add_widget(row)
+        self.paste_count = lbl("", 13, MUTED, height=24)
+        root.add_widget(self.paste_count)
+        scr.add_widget(root)
+        return scr
+
+    def open_paste(self, *_):
+        self.paste_in.text = ""
+        self.paste_title.active = not self.data["scenes"]
+        self._paste_update()
+        self.app.go("paste", "left")
+
+    def _paste_update(self, *_):
+        n = len(script_to_scenes(self.paste_in.text, add_title=self.paste_title.active))
+        self.paste_count.text = f"Will add {n} scene{'s' if n != 1 else ''}" if n else "Nothing to add yet"
+
+    def add_pasted(self, *_):
+        new = script_to_scenes(self.paste_in.text, add_title=self.paste_title.active)
+        if not new:
+            return
+        scenes = self.data["scenes"]
+        closing = len(scenes) >= 2 and scenes[-1].get("kind") == "title"
+        pos = len(scenes) - 1 if (closing and not self.paste_title.active) else len(scenes)
+        scenes[pos:pos] = new
+        self._persist()
+        self.refresh_list()
+        self.notify(f"Added {len(new)} scene(s) from your script. Tap one to adjust it.")
         self.app.go("scenes", "right")
 
     # ------------------------------------------------------------ raw JSON (advanced)

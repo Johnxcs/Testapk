@@ -35,8 +35,8 @@ TEMPLATE = {
 }
 
 
-def list_topics(topics_dir=TOPICS_DIR):
-    d = Path(topics_dir)
+def list_topics(topics_dir=None):
+    d = Path(topics_dir or TOPICS_DIR)
     return sorted(p.stem for p in d.glob("*.json"))
 
 
@@ -49,8 +49,8 @@ def sanitize_id(name):
     return name
 
 
-def topic_path(topic_id, topics_dir=TOPICS_DIR):
-    p = Path(topics_dir) / f"{sanitize_id(topic_id)}.json"
+def topic_path(topic_id, topics_dir=None):
+    p = Path(topics_dir or TOPICS_DIR) / f"{sanitize_id(topic_id)}.json"
     if not p.is_file():
         raise SystemExit(
             f"Topic '{topic_id}' not found (looked for {p}).\n"
@@ -60,7 +60,7 @@ def topic_path(topic_id, topics_dir=TOPICS_DIR):
     return p
 
 
-def load(topic_id, topics_dir=TOPICS_DIR):
+def load(topic_id, topics_dir=None):
     p = topic_path(topic_id, topics_dir)
     try:
         data = json.loads(p.read_text(encoding="utf-8"))
@@ -71,9 +71,10 @@ def load(topic_id, topics_dir=TOPICS_DIR):
     return p, data
 
 
-def create(topic_id, topics_dir=TOPICS_DIR):
-    Path(topics_dir).mkdir(exist_ok=True)
-    p = Path(topics_dir) / f"{sanitize_id(topic_id)}.json"
+def create(topic_id, topics_dir=None):
+    topics_dir = Path(topics_dir or TOPICS_DIR)
+    topics_dir.mkdir(parents=True, exist_ok=True)
+    p = topics_dir / f"{sanitize_id(topic_id)}.json"
     if p.exists():
         raise SystemExit(f"Topic already exists: {p}")
     p.write_text(json.dumps(TEMPLATE, indent=2, ensure_ascii=False) + "\n",

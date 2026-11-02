@@ -2,6 +2,7 @@
 import json
 import os
 import re
+import shutil
 import sys
 import threading
 import time
@@ -19,6 +20,7 @@ from kivy.metrics import dp, sp
 from kivy.properties import NumericProperty
 from kivy.uix.boxlayout import BoxLayout
 from kivy.uix.button import Button
+from kivy.uix.checkbox import CheckBox
 from kivy.uix.label import Label
 from kivy.uix.popup import Popup
 from kivy.uix.screenmanager import Screen, ScreenManager, SlideTransition
@@ -28,8 +30,9 @@ from kivy.uix.togglebutton import ToggleButton
 from kivy.uix.widget import Widget
 from kivy.utils import escape_markup
 
-from src import topics
+from src import settings, topics
 from scene_editor import SceneEditor
+from settings_ui import SettingsScreen
 
 IS_ANDROID = "ANDROID_ARGUMENT" in os.environ or "ANDROID_BOOTLOGO" in os.environ
 
@@ -152,6 +155,38 @@ def publish_to_gallery(mp4: Path, display_name: str) -> bool:
         return False
 
 
+def app_data_dir() -> Path:
+    """Folder that survives app updates (topics, settings, music, real-length info)."""
+    if IS_ANDROID:
+        try:
+            return Path(_activity().getExternalFilesDir(None).getAbsolutePath()) / "data"
+        except Exception:
+            pass
+    return ROOT
+
+
+def _display_name(resolver, uri):
+    try:
+        c = resolver.query(uri, None, None, None, None)
+        if c is not None:
+            try:
+                if c.moveToFirst():
+                    i = c.getColumnIndex("_display_name")
+                    if i >= 0:
+                        return str(c.getString(i))
+            finally:
+                c.close()
+    except Exception:
+        pass
+    return None
+
+
+AUDIO_EXT = {"audio/mpeg": ".mp3", "audio/mp4": ".m4a", "audio/x-m4a": ".m4a", "audio/aac": ".aac",
+             "audio/wav": ".wav", "audio/x-wav": ".wav", "audio/ogg": ".ogg", "audio/flac": ".flac",
+             "audio/opus": ".opus", "audio/3gpp": ".3gp"}
+IMAGE_EXT = {"image/png": ".png", "image/webp": ".webp"}
+
+
 class _LogStream:
     def __init__(self, on_line):
         self.on_line = on_line
@@ -174,15 +209,47 @@ class ReelsApp(App):
         Window.clearcolor = BG
         if IS_ANDROID:
             Window.softinput_mode = "resize"
+        self.is_android = IS_ANDROID
         self.selected_topic = None
+        self._init_data()
         self.sm = ScreenManager(transition=SlideTransition(duration=0.18))
         self.sm.add_widget(self._home())
         self.editor_ui = SceneEditor(self)
         for scr in self.editor_ui.screens():
             self.sm.add_widget(scr)
+        self.settings_ui = SettingsScreen(self)
+        self.sm.add_widget(self.settings_ui.screen())
         self.refresh_topics()
+        self.refresh_options()
         keep_screen_on()
         return self.sm
+
+    def _init_data(self):
+        """Keep topics/settings outside the app folder so updates never wipe them."""
+        data = app_data_dir()
+        settings.set_data_dir(data)
+        if data != ROOT:
+            tdir = data / "topics"
+            first = not tdir.exists()
+            tdir.mkdir(parents=True, exist_ok=True)
+            topics.TOPICS_DIR = tdir
+            if first:
+                self._copy_examples()
+
+    def _copy_examples(self):
+        n = 0
+        for f in sorted((ROOT / "topics").glob("*.json")):
+            dest = topics.TOPICS_DIR / f.name
+            if not dest.exists():
+                shutil.copy(f, dest)
+                n += 1
+        return n
+
+    def restore_examples(self):
+        n = self._copy_examples()
+        self.refresh_topics()
+        self.settings_ui.more_msg.text = (f"[color={GOOD}]Added {n} example topic(s).[/color]" if n
+                                          else "[color=8A90A0]You already have all the examples.[/color]")
 
     def on_pause(self):
         return True            # stay alive while Android settings / the image picker are open
@@ -195,9 +262,18 @@ class ReelsApp(App):
         scr = Screen(name="home")
         root = BoxLayout(orientation="vertical", padding=dp(16), spacing=dp(12))
 
-        head = BoxLayout(orientation="vertical", size_hint_y=None, height=dp(62))
-        head.add_widget(lbl("[b]Code Reels[/b]", 28, TEXT, height=38))
-        head.add_widget(lbl("Typing-code videos with voice-over", 13, MUTED, height=20))
+        head = BoxLayout(size_hint_y=None, height=dp(62), spacing=dp(8))
+        titles = BoxLayout(orientation="vertical")
+        titles.add_widget(lbl("[b]Code Reels[/b]", 28, TEXT, height=38))
+        titles.add_widget(lbl("Videos with voice-over, captions and music", 13, MUTED, height=20))
+        head.add_widget(titles)
+        gear = Button(text="\u2699", size_hint=(None, None), size=(dp(52), dp(52)), font_size=sp(24),
+                      font_name=UIFONT if Path(UIFONT).is_file() else "Roboto", pos_hint={"center_y": 0.5})
+        style_button(gear, CARD2, CARD2_ON, radius=16, border=(1, 1, 1, 0.10))
+        gear.bind(on_release=lambda *_: self.settings_ui.open())
+        gear_box = BoxLayout(size_hint_x=None, width=dp(52), orientation="vertical")
+        gear_box.add_widget(gear)
+        head.add_widget(gear_box)
         root.add_widget(head)
 
         root.add_widget(lbl("[b]TOPIC[/b]", 11, MUTED, height=16))
@@ -208,13 +284,24 @@ class ReelsApp(App):
         root.add_widget(sv)
 
         opts = style_card(BoxLayout(orientation="vertical", padding=dp(14),
-                                    spacing=dp(8), size_hint_y=None, height=dp(180)))
+                                    spacing=dp(8), size_hint_y=None, height=dp(236)))
         opts.add_widget(lbl("[b]FRAME RATE[/b]", 11, MUTED, height=16))
         row, self.fps_btns = segmented(["24", "30", "60"], "fps", "30")
         opts.add_widget(row)
         opts.add_widget(lbl("[b]NARRATION[/b]", 11, MUTED, height=16))
         row, self.voice_btns = segmented(["Voice-over", "Silent"], "voice", "Voice-over")
         opts.add_widget(row)
+        row3 = BoxLayout(spacing=dp(4), size_hint_y=None, height=dp(42))
+        self.cap_cb = CheckBox(size_hint_x=None, width=dp(40), color=ACCENT)
+        self.cap_cb.bind(active=lambda i, v: None if self._opt_busy else settings.update(captions=True if v else None))
+        self.music_cb = CheckBox(size_hint_x=None, width=dp(40), color=ACCENT)
+        self.music_cb.bind(active=lambda i, v: None if self._opt_busy else settings.update(music_enabled=True if v else None))
+        self.music_lbl = lbl("Music", 14, TEXT, height=42)
+        row3.add_widget(self.cap_cb)
+        row3.add_widget(lbl("Captions", 14, TEXT, height=42))
+        row3.add_widget(self.music_cb)
+        row3.add_widget(self.music_lbl)
+        opts.add_widget(row3)
         root.add_widget(opts)
 
         acts = BoxLayout(spacing=dp(8), size_hint_y=None, height=dp(66))
@@ -237,6 +324,21 @@ class ReelsApp(App):
 
         scr.add_widget(root)
         return scr
+
+    _opt_busy = False
+
+    def refresh_options(self):
+        """Sync the Captions / Music boxes with settings.json."""
+        S = settings.load()
+        mp = S.get("music_path") or ""
+        has = bool(mp) and Path(mp).is_file()
+        self._opt_busy = True
+        self.cap_cb.active = bool(S.get("captions"))
+        self.music_cb.disabled = not has
+        self.music_cb.active = has and bool(S.get("music_enabled"))
+        name = S.get("music_name") or Path(mp).name if has else ""
+        self.music_lbl.text = escape_markup(f"Music: {name[:16]}") if has else "Music (set in Settings)"
+        self._opt_busy = False
 
     def go(self, name, direction):
         self.sm.transition.direction = direction
@@ -339,21 +441,26 @@ class ReelsApp(App):
         return ROOT / "images"
 
     def pick_images(self, callback):
-        """Open the gallery picker; callback(list_of_paths) runs on the UI thread."""
+        self.pick_files(callback, "image/*", True, self.images_dir(), "img")
+
+    def pick_files(self, callback, mime="image/*", multiple=True, dest=None, prefix="img"):
+        """Open the system picker; callback(paths, names) runs on the UI thread.
+        Picked files are copied into `dest` so they keep working later."""
         if not IS_ANDROID:
-            return self.editor_ui.notify("Picking images works on the phone only.", True)
+            return self.editor_ui.notify("Picking files works on the phone only.", True)
         try:
             from android import activity
             from jnius import autoclass
             Intent = autoclass("android.content.Intent")
-            self._pick_cb = callback
+            self._pick = (callback, Path(dest) if dest else self.images_dir(), prefix, mime)
             if not getattr(self, "_bound", False):
                 activity.bind(on_activity_result=self._on_result)
                 self._bound = True
             intent = Intent(Intent.ACTION_GET_CONTENT)
-            intent.setType("image/*")
+            intent.setType(mime)
             intent.addCategory(Intent.CATEGORY_OPENABLE)
-            intent.putExtra(Intent.EXTRA_ALLOW_MULTIPLE, True)
+            if multiple:
+                intent.putExtra(Intent.EXTRA_ALLOW_MULTIPLE, True)
             _activity().startActivityForResult(intent, self.IMG_REQ)
         except Exception as e:
             self.editor_ui.notify(f"Can't open the picker: {e}", True)
@@ -363,6 +470,7 @@ class ReelsApp(App):
             return
         try:
             from jnius import autoclass
+            cb, out_dir, prefix, mime = self._pick
             uris = []
             clip = data.getClipData()
             if clip is not None:
@@ -372,20 +480,24 @@ class ReelsApp(App):
             resolver = _activity().getContentResolver()
             FileUtils = autoclass("android.os.FileUtils")
             FOS = autoclass("java.io.FileOutputStream")
-            out_dir = self.images_dir()
             out_dir.mkdir(parents=True, exist_ok=True)
-            stamp, paths = time.strftime("%Y%m%d_%H%M%S"), []
+            stamp, paths, names = time.strftime("%Y%m%d_%H%M%S"), [], []
             for n, uri in enumerate(uris, 1):
-                ext = {"image/png": ".png", "image/webp": ".webp"}.get(
-                    str(resolver.getType(uri) or ""), ".jpg")
-                dest = out_dir / f"img_{stamp}_{n}{ext}"
+                mt = str(resolver.getType(uri) or "")
+                disp = _display_name(resolver, uri)
+                if mime.startswith("audio"):
+                    ext = AUDIO_EXT.get(mt, Path(disp or "").suffix or ".mp3")
+                    stem = re.sub(r"[^A-Za-z0-9_-]+", "_", Path(disp or "song").stem)[:40] or "song"
+                    dest = out_dir / f"{stem}{ext}"
+                else:
+                    dest = out_dir / f"{prefix}_{stamp}_{n}{IMAGE_EXT.get(mt, '.jpg')}"
                 ins, outs = resolver.openInputStream(uri), FOS(str(dest))
                 FileUtils.copy(ins, outs)
                 ins.close()
                 outs.close()
                 paths.append(dest)
-            cb = self._pick_cb
-            Clock.schedule_once(lambda dt: cb(paths), 0)
+                names.append(disp or dest.name)
+            Clock.schedule_once(lambda dt: cb(paths, names), 0)
         except Exception as e:
             Clock.schedule_once(lambda dt: self.editor_ui.notify(f"Couldn't import: {e}", True), 0)
 
@@ -430,8 +542,8 @@ class ReelsApp(App):
             from src.video import render_topic
             cfg = load_config(str(ROOT / "config.json"))
             out = output_dir()
-            mp4 = Path(render_topic(tid, cfg, {"fps": fps, "out": str(out),
-                                               "no_audio": silent}))
+            overrides = {**settings.render_overrides(), "fps": fps, "out": str(out), "no_audio": silent}
+            mp4 = Path(render_topic(tid, cfg, overrides))
             if out == SHARED_DIR:
                 scan_file(mp4)
                 self.say(f"Done. Saved to CodeReels/{mp4.parent.name}/{mp4.name}", "good")

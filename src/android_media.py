@@ -109,14 +109,9 @@ def _read_wav(path):
 
 
 def _normalize_wav(src, dst):
-    import audioop
+    from . import pcm
     ch, sw, rate, data = _read_wav(src)
-    if sw != 2:
-        data = audioop.lin2lin(data, sw, 2)
-    if ch == 2:
-        data = audioop.tomono(data, 2, 0.5, 0.5)
-    if rate != RATE:
-        data, _ = audioop.ratecv(data, 2, 1, rate, RATE, None)
+    data = pcm.ratecv(pcm.tomono(pcm.to16(data, sw), ch), rate, RATE)
     with wave.open(str(dst), "wb") as w:
         w.setnchannels(1)
         w.setsampwidth(2)
@@ -124,12 +119,70 @@ def _normalize_wav(src, dst):
         w.writeframes(data)
 
 
-def _try_synth(tts, tag, text, raw):
+def _voice_obj(tts, name):
     from jnius import cast
-    loc = _cls("java.util.Locale").forLanguageTag(tag)
-    if tts.isLanguageAvailable(loc) < 0:
-        return False, "language not installed"
-    tts.setLanguage(loc)
+    for o in tts.getVoices().toArray():
+        v = cast("android.speech.tts.Voice", o)
+        if str(v.getName()) == name:
+            return v
+    return None
+
+
+def list_voices():
+    """Installed phone voices: [{'name','tag','lang','network'}] sorted by language."""
+    from jnius import cast
+    out = []
+    for pkg in ("com.google.android.tts", None):
+        tts = _open_engine(pkg)
+        if tts is None:
+            continue
+        try:
+            for o in tts.getVoices().toArray():
+                v = cast("android.speech.tts.Voice", o)
+                loc = v.getLocale()
+                out.append({"name": str(v.getName()), "tag": str(loc.toLanguageTag()),
+                            "lang": str(loc.getDisplayName()),
+                            "network": bool(v.isNetworkConnectionRequired())})
+        except Exception:
+            continue
+        if out:
+            break
+    return sorted(out, key=lambda v: (v["lang"], v["name"]))
+
+
+def speak_sample(text, voice=None):
+    """Play a short sample on the speaker (for the voice picker)."""
+    from jnius import cast
+    voice = voice or {}
+    for pkg in ("com.google.android.tts", None):
+        tts = _open_engine(pkg)
+        if tts is None:
+            continue
+        v = _voice_obj(tts, voice["voice_name"]) if voice.get("voice_name") else None
+        if v is not None:
+            tts.setVoice(v)
+        elif voice.get("locale"):
+            tts.setLanguage(_cls("java.util.Locale").forLanguageTag(voice["locale"]))
+        tts.setSpeechRate(float(voice.get("speech_rate") or 1.0))
+        cs = cast("java.lang.CharSequence", _cls("java.lang.String")(text))
+        tts.speak(cs, 0, None, "sample")
+        return True
+    return False
+
+
+def _try_synth(tts, tag, text, raw, voice_name=None, rate=None):
+    from jnius import cast
+    if tag == "@voice":
+        v = _voice_obj(tts, voice_name)
+        if v is None:
+            return False, "chosen voice not installed"
+        tts.setVoice(v)
+    else:
+        loc = _cls("java.util.Locale").forLanguageTag(tag)
+        if tts.isLanguageAvailable(loc) < 0:
+            return False, "language not installed"
+        tts.setLanguage(loc)
+    tts.setSpeechRate(float(rate or 1.0))
     raw.unlink(missing_ok=True)
     uid = f"u{time.time_ns()}"
     ev = threading.Event()
@@ -153,6 +206,9 @@ def tts_to_wav(text, out_wav, voice=None):
     for t in (voice.get("locale"), "fil-PH", "tl-PH", "en-US", "en-GB"):
         if t and t not in tags:
             tags.append(t)
+    if voice.get("voice_name"):
+        tags.insert(0, "@voice")
+    rate = voice.get("speech_rate")
     raw = Path(out_wav).with_suffix(".raw.wav")
     tried = []
     for pkg in ("com.google.android.tts", None):
@@ -161,7 +217,7 @@ def tts_to_wav(text, out_wav, voice=None):
             tried.append(f"{pkg or 'default engine'}: not available")
             continue
         for tag in tags:
-            ok, why = _try_synth(tts, tag, text, raw)
+            ok, why = _try_synth(tts, tag, text, raw, voice.get("voice_name"), rate)
             if ok:
                 _normalize_wav(raw, out_wav)
                 raw.unlink(missing_ok=True)
@@ -174,6 +230,77 @@ def tts_to_wav(text, out_wav, voice=None):
     raise RuntimeError("no phone voice produced audio. Tried: " + "; ".join(tried) +
                        ". Install 'Speech Recognition & Synthesis from Google' and download "
                        "a voice in Settings > Text-to-speech output.")
+
+
+# ----------------------------- audio decoding (for background music) -----------------------------
+def decode_audio_to_wav(src, out_wav, max_seconds=None):
+    """Decode mp3/m4a/ogg/flac... with MediaCodec -> 44.1 kHz mono WAV. PCM never passes
+    through Python while decoding: Java writes it straight to a temp file."""
+    from . import pcm
+    Extractor = _cls("android.media.MediaExtractor")
+    MediaCodec = _cls("android.media.MediaCodec")
+    ex = Extractor()
+    ex.setDataSource(str(src))
+    fmt = mime = None
+    for i in range(ex.getTrackCount()):
+        f = ex.getTrackFormat(i)
+        m = str(f.getString("mime") or "")
+        if m.startswith("audio/"):
+            ex.selectTrack(i)
+            fmt, mime = f, m
+            break
+    if fmt is None:
+        raise RuntimeError("no audio track in that file")
+    rate, chans = fmt.getInteger("sample-rate"), fmt.getInteger("channel-count")
+    dec = MediaCodec.createDecoderByType(mime)
+    dec.configure(fmt, None, None, 0)
+    dec.start()
+    raw = Path(out_wav).with_suffix(".pcm")
+    fos = _cls("java.io.FileOutputStream")(str(raw))
+    ch = fos.getChannel()
+    info = _cls("android.media.MediaCodec$BufferInfo")()
+    limit = int(max_seconds * rate * chans * 2) if max_seconds else None
+    in_done = out_done = False
+    written, t0 = 0, time.time()
+    while not out_done and time.time() - t0 < 240:
+        if not in_done:
+            i = dec.dequeueInputBuffer(10000)
+            if i >= 0:
+                buf = dec.getInputBuffer(i)
+                n = ex.readSampleData(buf, 0)
+                if n < 0:
+                    dec.queueInputBuffer(i, 0, 0, 0, 4)
+                    in_done = True
+                else:
+                    dec.queueInputBuffer(i, 0, n, ex.getSampleTime(), 0)
+                    ex.advance()
+        o = dec.dequeueOutputBuffer(info, 10000)
+        if o == -2:
+            f2 = dec.getOutputFormat()
+            rate, chans = f2.getInteger("sample-rate"), f2.getInteger("channel-count")
+        elif o >= 0:
+            if info.size > 0:
+                ob = dec.getOutputBuffer(o)
+                ob.position(info.offset)
+                ob.limit(info.offset + info.size)
+                ch.write(ob)
+                written += info.size
+            dec.releaseOutputBuffer(o, False)
+            if (info.flags & 4) or (limit and written >= limit):
+                out_done = True
+    ch.close()
+    fos.close()
+    dec.stop()
+    dec.release()
+    ex.release()
+    raw_pcm = raw.read_bytes()
+    raw.unlink(missing_ok=True)
+    mono = pcm.ratecv(pcm.tomono(raw_pcm, chans), rate, RATE)
+    with wave.open(str(out_wav), "wb") as w:
+        w.setnchannels(1)
+        w.setsampwidth(2)
+        w.setframerate(RATE)
+        w.writeframes(mono)
 
 
 # ----------------------------- MediaCodec encoders -----------------------------
