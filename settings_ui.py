@@ -7,7 +7,6 @@ from kivy.metrics import dp, sp
 from kivy.uix.boxlayout import BoxLayout
 from kivy.uix.button import Button
 from kivy.uix.screenmanager import Screen
-from kivy.uix.scrollview import ScrollView
 from kivy.uix.slider import Slider
 from kivy.uix.spinner import Spinner
 from kivy.uix.togglebutton import ToggleButton
@@ -17,7 +16,7 @@ from scene_editor import DarkOption
 from src import music_check, settings
 from src.theme import THEMES
 from ui_kit import (MUTED_HEX, ACCENT, ACCENT_DN, BAD, CARD, CARD2, CARD2_ON, GOOD, MUTED, TEXT, confirm,
-                    framed_input, lbl, style_button, style_card)
+                    framed_input, lbl, scroll_column, style_button, style_card)
 
 LAYOUTS = {"Vertical 9:16": "vertical", "Horizontal 16:9": "horizontal"}
 AUTO_VOICE = "Automatic (Filipino first)"
@@ -59,10 +58,7 @@ class SettingsScreen:
         bar.add_widget(BoxLayout(size_hint_x=None, width=dp(90)))
         root.add_widget(bar)
 
-        sv = ScrollView(do_scroll_x=False, bar_width=dp(3))
-        box = BoxLayout(orientation="vertical", spacing=dp(10), size_hint_y=None, padding=(0, 0, 0, dp(40)))
-        box.bind(minimum_height=box.setter("height"))
-        sv.add_widget(box)
+        sv, box = scroll_column(spacing=10, padding=(0, 0, 0, dp(60)))
         root.add_widget(sv)
         scr.add_widget(root)
 
@@ -135,15 +131,12 @@ class SettingsScreen:
         music.add_widget(lbl("Turn music on or off with the Music box on the home screen.", 11, MUTED, height=18))
         self._fit(music)
 
-        # ---- EXAMPLES
-        more = self._card(box, "TOPICS")
-        ex = Button(text="Add example topics back", size_hint_y=None, height=dp(46), font_size=sp(15))
-        style_button(ex, CARD2, CARD2_ON, radius=12, border=(1, 1, 1, 0.10))
-        ex.bind(on_release=lambda *_: self.app.restore_examples())
-        more.add_widget(ex)
-        self.more_msg = lbl("", 12, MUTED, height=20)
-        more.add_widget(self.more_msg)
-        self._fit(more)
+        txt = self._card(box, "APP TEXT")
+        eb = Button(text="Edit Home & About text", size_hint_y=None, height=dp(46), font_size=sp(15))
+        style_button(eb, CARD2, CARD2_ON, radius=12, border=(1, 1, 1, 0.10))
+        eb.bind(on_release=lambda *_: self.app.content_ui.open())
+        txt.add_widget(eb)
+        self._fit(txt)
         return scr
 
     def _card(self, box, title):
@@ -391,10 +384,7 @@ class MusicCheck:
         bar.add_widget(self.use_btn)
         root.add_widget(bar)
 
-        sv = ScrollView(do_scroll_x=False, bar_width=dp(3))
-        box = BoxLayout(orientation="vertical", spacing=dp(10), size_hint_y=None, padding=(0, 0, 0, dp(40)))
-        box.bind(minimum_height=box.setter("height"))
-        sv.add_widget(box)
+        sv, box = scroll_column(spacing=10, padding=(0, 0, 0, dp(60)))
         root.add_widget(sv)
         scr.add_widget(root)
 

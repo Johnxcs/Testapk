@@ -24,14 +24,14 @@ from kivy.uix.checkbox import CheckBox
 from kivy.uix.label import Label
 from kivy.uix.popup import Popup
 from kivy.uix.screenmanager import Screen, ScreenManager, SlideTransition
-from kivy.uix.scrollview import ScrollView
 from kivy.uix.textinput import TextInput
 from kivy.uix.togglebutton import ToggleButton
 from kivy.uix.widget import Widget
 from kivy.utils import escape_markup
 
-from src import settings, topics
+from src import content, settings, topics
 from scene_editor import SceneEditor
+from about_ui import AboutScreen, ContentEditor
 from settings_ui import SettingsScreen
 
 IS_ANDROID = "ANDROID_ARGUMENT" in os.environ or "ANDROID_BOOTLOGO" in os.environ
@@ -211,6 +211,7 @@ class ReelsApp(App):
             Window.softinput_mode = "resize"
         self.is_android = IS_ANDROID
         self.selected_topic = None
+        self.navs = []
         self._init_data()
         self.sm = ScreenManager(transition=SlideTransition(duration=0.18))
         self.sm.add_widget(self._home())
@@ -220,7 +221,11 @@ class ReelsApp(App):
         self.settings_ui = SettingsScreen(self)
         for scr in self.settings_ui.screens():
             self.sm.add_widget(scr)
-        self.refresh_topics()
+        self.about_ui = AboutScreen(self)
+        self.content_ui = ContentEditor(self)
+        for scr in self.about_ui.screens() + self.content_ui.screens():
+            self.sm.add_widget(scr)
+        self.apply_content()
         self.refresh_options()
         keep_screen_on()
         return self.sm
@@ -231,26 +236,18 @@ class ReelsApp(App):
         settings.set_data_dir(data)
         if data != ROOT:
             tdir = data / "topics"
-            first = not tdir.exists()
             tdir.mkdir(parents=True, exist_ok=True)
             topics.TOPICS_DIR = tdir
-            if first:
-                self._copy_examples()
-
-    def _copy_examples(self):
-        n = 0
-        for f in sorted((ROOT / "topics").glob("*.json")):
-            dest = topics.TOPICS_DIR / f.name
-            if not dest.exists():
-                shutil.copy(f, dest)
-                n += 1
-        return n
-
-    def restore_examples(self):
-        n = self._copy_examples()
-        self.refresh_topics()
-        self.settings_ui.more_msg.text = (f"[color={GOOD}]Added {n} example topic(s).[/color]" if n
-                                          else "[color=8A90A0]You already have all the examples.[/color]")
+            # the app no longer ships example videos: tidy away the old ones once (kept in a backup folder)
+            marker = data / ".examples_removed"
+            if not marker.exists():
+                backup = data / "removed_examples"
+                for name in ("java_topic.json", "showcase.json"):
+                    f = tdir / name
+                    if f.exists():
+                        backup.mkdir(exist_ok=True)
+                        shutil.move(str(f), str(backup / name))
+                marker.write_text("1")
 
     def on_pause(self):
         return True            # stay alive while Android settings / the image picker are open
@@ -261,12 +258,15 @@ class ReelsApp(App):
     # ---------- home screen ----------
     def _home(self):
         scr = Screen(name="home")
-        root = BoxLayout(orientation="vertical", padding=dp(16), spacing=dp(12))
+        outer = BoxLayout(orientation="vertical")
+        root = BoxLayout(orientation="vertical", padding=dp(16), spacing=dp(10))
 
         head = BoxLayout(size_hint_y=None, height=dp(62), spacing=dp(8))
         titles = BoxLayout(orientation="vertical")
-        titles.add_widget(lbl("[b]Code Reels[/b]", 28, TEXT, height=38))
-        titles.add_widget(lbl("Videos with voice-over, captions and music", 13, MUTED, height=20))
+        self.home_title = lbl("", 28, TEXT, height=38)
+        self.home_tag = lbl("", 13, MUTED, height=20)
+        titles.add_widget(self.home_title)
+        titles.add_widget(self.home_tag)
         head.add_widget(titles)
         gear = Button(text="\u2699", size_hint=(None, None), size=(dp(52), dp(52)), font_size=sp(24),
                       font_name=UIFONT if Path(UIFONT).is_file() else "Roboto", pos_hint={"center_y": 0.5})
@@ -277,12 +277,16 @@ class ReelsApp(App):
         head.add_widget(gear_box)
         root.add_widget(head)
 
-        root.add_widget(lbl("[b]TOPIC[/b]", 11, MUTED, height=16))
-        sv = ScrollView(bar_width=0, do_scroll_x=False)
+        # scrolling part: tip, videos, options, toolbar
+        sv, col = scroll_column(spacing=10, bar=3)
+        self.tip_holder = BoxLayout(orientation="vertical", size_hint_y=None)
+        self.tip_holder.bind(minimum_height=self.tip_holder.setter("height"))
+        col.add_widget(self.tip_holder)
+        self.topics_lbl = lbl("", 11, MUTED, height=16)
+        col.add_widget(self.topics_lbl)
         self.topic_box = BoxLayout(orientation="vertical", spacing=dp(8), size_hint_y=None)
         self.topic_box.bind(minimum_height=self.topic_box.setter("height"))
-        sv.add_widget(self.topic_box)
-        root.add_widget(sv)
+        col.add_widget(self.topic_box)
 
         opts = style_card(BoxLayout(orientation="vertical", padding=dp(14),
                                     spacing=dp(8), size_hint_y=None, height=dp(236)))
@@ -303,28 +307,90 @@ class ReelsApp(App):
         row3.add_widget(self.music_cb)
         row3.add_widget(self.music_lbl)
         opts.add_widget(row3)
-        root.add_widget(opts)
+        col.add_widget(opts)
 
         acts = BoxLayout(spacing=dp(8), size_hint_y=None, height=dp(66))
         acts.add_widget(tool_button("\u270e", "Edit", self.open_editor))
-        acts.add_widget(tool_button("\uff0b", "New", self.new_topic, tint=rgb("#3DDC97")))
-        acts.add_widget(tool_button("\u29c9", "Copy", self.dup_topic))
+        acts.add_widget(tool_button("\u271a", "New", self.new_topic, tint=rgb("#3DDC97")))
+        acts.add_widget(tool_button("\u2750", "Copy", self.dup_topic))
         acts.add_widget(tool_button("\u2715", "Delete", self.ask_delete, tint=rgb("#FF6B6B")))
-        root.add_widget(acts)
+        col.add_widget(acts)
+        root.add_widget(sv)
 
-        self.render_btn = Button(text="[b]Render video[/b]", markup=True, font_size=sp(18),
-                                 size_hint_y=None, height=dp(60))
+        # fixed part: render button, progress, status
+        self.render_btn = Button(text=self._render_label(), markup=True, font_size=sp(18),
+                                 size_hint_y=None, height=dp(58))
         style_button(self.render_btn, ACCENT, ACCENT_DN, radius=18, fg=(1, 1, 1, 1))
         self.render_btn.bind(on_release=self.start_render)
         root.add_widget(self.render_btn)
-
         self.bar = Bar(size_hint_y=None, height=dp(10))
         root.add_widget(self.bar)
-        self.status = lbl("Ready.", 12, MUTED, height=40)
+        self.status = lbl("Ready.", 12, MUTED, height=34)
         root.add_widget(self.status)
 
-        scr.add_widget(root)
+        outer.add_widget(root)
+        outer.add_widget(nav_holder(self, "home"))
+        scr.add_widget(outer)
         return scr
+
+    # ---------- Home / About text (content.json) ----------
+    def _render_label(self):
+        return f"[b]{escape_markup(content.get('home.render_button') or 'Render video')}[/b]"
+
+    def apply_content(self):
+        """Re-read the Home / About / tab texts and update every screen that shows them."""
+        H = content.get("home") or {}
+        self.home_title.text = f"[b]{escape_markup(str(H.get('title', '')))}[/b]"
+        self.home_tag.text = escape_markup(str(H.get("tagline", "")))
+        self.topics_lbl.text = f"[b]{escape_markup(str(H.get('topics_label', '')))}[/b]"
+        self.tip_holder.clear_widgets()
+        if str(H.get("tip", "")).strip():
+            card = auto_card(padding=12, bg=rgb("#1B2A44"), radius=14)
+            card.add_widget(auto_label(escape_markup(str(H["tip"])), 13, TEXT))
+            self.tip_holder.add_widget(card)
+        if not self.render_btn.disabled:
+            self.render_btn.text = self._render_label()
+        self.refresh_navs()
+        if hasattr(self, "about_ui"):
+            self.about_ui.refresh()
+        if getattr(self, "selected_topic", None) is not None or hasattr(self, "editor_ui"):
+            self.refresh_topics(select=self.selected_topic)
+
+    def refresh_navs(self):
+        for holder, active in self.navs:
+            build_nav(holder, self, active)
+
+    TAB_ORDER = ("home", "editor", "about")
+    SCREEN_TAB = {"home": "home", "settings": "home", "musiccheck": "home", "scenes": "editor",
+                  "scene": "editor", "json": "editor", "paste": "editor", "about": "about",
+                  "content": "about"}
+
+    def go_tab(self, key):
+        cur = self.SCREEN_TAB.get(self.sm.current, "home")
+        if key == cur and self.sm.current in ("home", "scenes", "about"):
+            return
+        direction = "left" if self.TAB_ORDER.index(key) > self.TAB_ORDER.index(cur) else "right"
+        if key == "editor":
+            if not self.selected_topic:
+                self.go("home", "right")
+                return self.say("Pick or create a video on Home first, then open the Editor.", "bad")
+            self.editor_ui.open(self.selected_topic, direction)
+        else:
+            self.go(key, direction)
+
+    def open_url(self, url):
+        """Open a web page / mail app."""
+        try:
+            if IS_ANDROID:
+                from jnius import autoclass
+                Intent = autoclass("android.content.Intent")
+                Uri = autoclass("android.net.Uri")
+                _activity().startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(url)))
+            else:
+                import webbrowser
+                webbrowser.open(url)
+        except Exception as e:
+            self.say(f"Can't open the link: {e}", "bad")
 
     _opt_busy = False
 
@@ -338,7 +404,7 @@ class ReelsApp(App):
         self.music_cb.disabled = not has
         self.music_cb.active = has and bool(S.get("music_enabled"))
         name = S.get("music_name") or Path(mp).name if has else ""
-        self.music_lbl.text = escape_markup(f"Music: {name[:16]}") if has else "Music (set in Settings)"
+        self.music_lbl.text = escape_markup(f"Music: {name[:11]}") if has else "Music: none"
         self._opt_busy = False
 
     def go(self, name, direction):
@@ -351,7 +417,7 @@ class ReelsApp(App):
         self.topic_box.clear_widgets()
         if not ids:
             self.selected_topic = None
-            self.topic_box.add_widget(lbl("No topics yet. Tap “New topic”.", 14, MUTED, height=40))
+            self.topic_box.add_widget(self._empty_card())
             return
         if select in ids:
             self.selected_topic = select
@@ -380,14 +446,31 @@ class ReelsApp(App):
     def _pick(self, tid):
         self.selected_topic = tid
 
+    def _empty_card(self):
+        H = content.get("home") or {}
+        card = auto_card(padding=18, spacing=10, radius=18)
+        card.add_widget(auto_label(f"[b]{escape_markup(str(H.get('empty_title', '')))}[/b]", 18, TEXT))
+        card.add_widget(auto_label(escape_markup(str(H.get("empty_text", ""))), 13, MUTED))
+        b = Button(text=f"[b]{escape_markup(str(H.get('empty_button') or 'New video'))}[/b]", markup=True,
+                   size_hint_y=None, height=dp(52), font_size=sp(16))
+        style_button(b, ACCENT, ACCENT_DN, radius=16, fg=(1, 1, 1, 1))
+        b.bind(on_release=self.new_topic)
+        card.add_widget(b)
+        return card
+
     def new_topic(self, *_):
-        n = 1
-        while (topics.TOPICS_DIR / f"topic-{n}.json").exists():
+        prompt("Name your video", "You can change the name later.", "e.g. 5 Study Tips",
+               "Create", self._create_topic)
+
+    def _create_topic(self, title):
+        base = topics.sanitize_id(title) if re.search(r"[A-Za-z0-9]", title) else "video"
+        tid, n = base, 1
+        while (topics.TOPICS_DIR / f"{tid}.json").exists():
             n += 1
-        topics.create(f"topic-{n}")
-        self.refresh_topics(select=f"topic-{n}")
-        self.say(f"Created topic-{n}.", "good")
-        self.editor_ui.open(f"topic-{n}")
+            tid = f"{base}-{n}"
+        topics.create(tid, blank=True, title=title)
+        self.refresh_topics(select=tid)
+        self.editor_ui.open(tid)
 
     def open_editor(self, *_):
         if not self.selected_topic:
@@ -569,7 +652,7 @@ class ReelsApp(App):
 
             def reset(dt):
                 self.render_btn.disabled = False
-                self.render_btn.text = "[b]Render video[/b]"
+                self.render_btn.text = self._render_label()
             Clock.schedule_once(reset, 0)
 
 

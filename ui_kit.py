@@ -1,6 +1,8 @@
 """Shared look & widgets for the Code Reels app (Kivy)."""
 from pathlib import Path
 
+from kivy.clock import Clock
+from kivy.effects.scroll import ScrollEffect
 from kivy.graphics import Color, Line, RoundedRectangle
 from kivy.metrics import dp, sp
 from kivy.properties import NumericProperty
@@ -8,6 +10,7 @@ from kivy.uix.boxlayout import BoxLayout
 from kivy.uix.button import Button
 from kivy.uix.label import Label
 from kivy.uix.popup import Popup
+from kivy.uix.scrollview import ScrollView
 from kivy.uix.textinput import TextInput
 from kivy.uix.togglebutton import ToggleButton
 from kivy.uix.widget import Widget
@@ -133,6 +136,124 @@ class Bar(Widget):
         self._f.pos, self._f.size = self.pos, (w, self.height)
 
 
+def auto_label(text, size=14, color=TEXT, bold=False, halign="left"):
+    """Label that wraps to the width it is given and grows to fit its text."""
+    l = Label(text=text, font_size=sp(size), color=color, bold=bold, markup=True,
+              halign=halign, valign="top", size_hint_y=None)
+    l.bind(width=lambda i, w: setattr(i, "text_size", (w, None)))
+    l.bind(texture_size=lambda i, ts: setattr(i, "height", ts[1] + dp(4)))
+    return l
+
+
+def auto_card(padding=14, spacing=6, bg=None, radius=16):
+    """Card that grows with its children."""
+    card = BoxLayout(orientation="vertical", padding=dp(padding), spacing=dp(spacing), size_hint_y=None)
+    card.bind(minimum_height=card.setter("height"))
+    style_card(card, bg or CARD, radius)
+    return card
+
+
+TAB_ICONS = (("home", "\u2302"), ("editor", "\u270e"), ("about", "\u2139"))
+
+
+def build_nav(holder, app, active):
+    from src import content
+    labels = content.get("tabs") or {}
+    holder.clear_widgets()
+    font_ok = Path(UIFONT).is_file()
+    for key, glyph in TAB_ICONS:
+        on = key == active
+        col = "%02x%02x%02x" % tuple(int(c * 255) for c in (ACCENT if on else MUTED)[:3])
+        g = f"[font={UIFONT}]{glyph}[/font]" if font_ok else glyph
+        b = Button(markup=True, halign="center", valign="middle",
+                   text=(f"[size={int(sp(20))}][color={col}]{g}[/color][/size]\n"
+                         f"[size={int(sp(11))}][color={col}]{labels.get(key) or key.title()}[/color][/size]"))
+        style_button(b, blend_rgba(CARD, ACCENT, 0.20) if on else (0, 0, 0, 0), CARD2_ON, radius=14)
+        b.bind(on_release=lambda *_, k=key: app.go_tab(k))
+        holder.add_widget(b)
+
+
+def nav_holder(app, active):
+    """Bottom tab bar (Home / Editor / About). app.refresh_navs() rebuilds it after text edits."""
+    holder = BoxLayout(size_hint_y=None, height=dp(64), spacing=dp(6), padding=(dp(8), dp(6)))
+    style_card(holder, rgb("#14171D"), 0)
+    build_nav(holder, app, active)
+    app.navs.append((holder, active))
+    return holder
+
+
+def scroll_column(spacing=8, padding=(0, 0, 0, 0), bar=3):
+    """ScrollView + vertical column that always starts at the TOP (Kivy otherwise
+    bottom-aligns short content) and never bounces into blank space."""
+    sv = ScrollView(do_scroll_x=False, bar_width=dp(bar), effect_cls=ScrollEffect)
+    box = BoxLayout(orientation="vertical", spacing=dp(spacing), size_hint_y=None, padding=padding)
+
+    def fit(*_):
+        box.height = max(box.minimum_height, sv.height)
+    box.bind(minimum_height=fit)
+    sv.bind(height=fit)
+    sv.add_widget(box)
+    return sv, box
+
+
+def _find_scroll(w):
+    p = w.parent
+    while p is not None:
+        if isinstance(p, ScrollView):
+            return p
+        p = p.parent
+    return None
+
+
+def reveal(widget, *_):
+    """Scroll so `widget` is fully visible (used when the keyboard opens)."""
+    sv = _find_scroll(widget)
+    if sv is not None:
+        try:
+            sv.scroll_to(widget, padding=dp(30), animate=True)
+        except Exception:
+            pass
+
+
+def _on_focus(frame, focused):
+    if focused:                       # the keyboard animates in, so try a few times
+        for t in (0.15, 0.45, 0.9):
+            Clock.schedule_once(lambda dt, f=frame: reveal(f), t)
+
+
+def prompt(title, message, hint, ok_text, on_ok, initial=""):
+    """Dark popup with one text box. on_ok(text) is called with the typed text."""
+    box = BoxLayout(orientation="vertical", padding=dp(18), spacing=dp(12))
+    style_card(box, CARD, 20)
+    box.add_widget(lbl(f"[b]{title}[/b]", 18, TEXT, height=30))
+    box.add_widget(lbl(message, 13, MUTED, height=36))
+    frame, ti = framed_input(initial, hint=hint)
+    box.add_widget(frame)
+    row = BoxLayout(spacing=dp(10), size_hint_y=None, height=dp(48))
+    pop = Popup(title="", separator_height=0, content=box, auto_dismiss=True,
+                size_hint=(0.9, None), height=dp(290), background="",
+                pos_hint={"center_x": 0.5, "top": 0.92},
+                background_color=(0, 0, 0, 0), overlay_color=(0, 0, 0, 0.65))
+    no = Button(text="Cancel", font_size=sp(15))
+    style_button(no, CARD2, CARD2_ON, radius=14)
+    no.bind(on_release=lambda *_: pop.dismiss())
+    ok = Button(text=f"[b]{ok_text}[/b]", markup=True, font_size=sp(15))
+    style_button(ok, ACCENT, ACCENT_DN, radius=14, fg=(1, 1, 1, 1))
+
+    def go(*_):
+        text = ti.text.strip()
+        if text:
+            pop.dismiss()
+            on_ok(text)
+    ok.bind(on_release=go)
+    ti.bind(on_text_validate=go)
+    row.add_widget(no)
+    row.add_widget(ok)
+    box.add_widget(row)
+    pop.open()
+    Clock.schedule_once(lambda dt: setattr(ti, "focus", True), 0.25)
+
+
 def confirm(title, message, yes_text, on_yes, danger=True):
     """Dark confirmation popup. `message` must already be markup-safe."""
     box = BoxLayout(orientation="vertical", padding=dp(18), spacing=dp(14))
@@ -173,4 +294,5 @@ def framed_input(text="", multiline=False, height=46, mono=False, hint=""):
     frame = BoxLayout(size_hint_y=None, height=dp(height) + dp(8), padding=dp(4))
     style_card(frame, CARD2, 12)
     frame.add_widget(ti)
+    ti.bind(focus=lambda inst, v, f=frame: _on_focus(f, v))
     return frame, ti

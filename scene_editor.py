@@ -5,6 +5,7 @@ import threading
 from pathlib import Path
 
 from kivy.clock import Clock
+from kivy.core.window import Window
 from kivy.metrics import dp, sp
 from kivy.uix.boxlayout import BoxLayout
 from kivy.uix.button import Button
@@ -24,7 +25,8 @@ from src.script_import import script_to_scenes
 from src.narration import estimate_duration
 from src.scene_templates import TEMPLATES
 from ui_kit import (ACCENT, ACCENT_DN, BAD, CARD, CARD2, CARD2_ON, GOOD, MONO, MUTED, ROOT,
-                    TEXT, UIFONT, confirm, framed_input, lbl, rgb, style_button, style_card)
+                    TEXT, UIFONT, confirm, framed_input, lbl, nav_holder, rgb, scroll_column, style_button,
+                    style_card)
 
 # kind -> (label, colour)
 KIND_INFO = {
@@ -62,6 +64,10 @@ FIELDS = {
 NARRATION = ("narration", "Narration (what the voice says)", "multi", 150)
 TOPIC_FIELDS = [("title", "Video title", "My video"), ("handle", "Your handle (shown on the video)", "@yourname"),
                 ("filename", "Code file name", "Main.java"), ("language", "Code language", "java")]
+
+
+PREVIEW_TEXT = (f"[font={UIFONT}]\u25b6[/font]   Preview this scene" if Path(UIFONT).is_file()
+                else "Preview this scene")
 
 
 class DarkOption(SpinnerOption):
@@ -177,20 +183,19 @@ class SceneEditor:
         self.msg = lbl("", 12, MUTED, height=18)
         root.add_widget(self.msg)
 
-        sv = ScrollView(do_scroll_x=False, bar_width=dp(3))
-        self.list_box = BoxLayout(orientation="vertical", spacing=dp(10), size_hint_y=None,
-                                  padding=(0, 0, 0, dp(30)))
-        self.list_box.bind(minimum_height=self.list_box.setter("height"))
-        sv.add_widget(self.list_box)
+        sv, self.list_box = scroll_column(spacing=10, padding=(0, 0, 0, dp(30)))
         root.add_widget(sv)
-        scr.add_widget(root)
+        outer = BoxLayout(orientation="vertical")
+        outer.add_widget(root)
+        outer.add_widget(nav_holder(self.app, "editor"))
+        scr.add_widget(outer)
         return scr
 
     def notify(self, text, bad=False):
         color = BAD if bad else GOOD
         self.msg.text = f"[color={color}]{escape_markup(text)}[/color]"
 
-    def open(self, tid):
+    def open(self, tid, direction="left"):
         try:
             data = json.loads(topics.topic_path(tid).read_text(encoding="utf-8"))
             if not isinstance(data.get("scenes"), list):
@@ -200,7 +205,7 @@ class SceneEditor:
         self.tid, self.data = tid, data
         self.msg.text = ""
         self.refresh_list()
-        self.app.go("scenes", "left")
+        self.app.go("scenes", direction)
 
     def close(self, *_):
         self._persist()
@@ -281,7 +286,7 @@ class SceneEditor:
         font = UIFONT if Path(UIFONT).is_file() else "Roboto"
         for glyph, cb, tint in (("\u25b2", lambda *_, i=i: self.move(i, -1), None),
                                 ("\u25bc", lambda *_, i=i: self.move(i, 1), None),
-                                ("\u29c9", lambda *_, i=i: self.duplicate(i), None),
+                                ("\u2750", lambda *_, i=i: self.duplicate(i), None),
                                 ("\u2715", lambda *_, i=i: self.ask_delete(i), rgb("#FF6B6B"))):
             b = Button(text=glyph, font_name=font, font_size=sp(15))
             style_button(b, CARD2, CARD2_ON, radius=10, fg=tint or TEXT)
@@ -352,18 +357,23 @@ class SceneEditor:
         for w in (cancel, self.form_title, save):
             bar.add_widget(w)
         root.add_widget(bar)
-        self.prev_btn = Button(text="\u25b6  Preview this scene", size_hint_y=None, height=dp(46), font_size=sp(15))
+        self.prev_btn = Button(text=PREVIEW_TEXT, markup=True, size_hint_y=None, height=dp(46), font_size=sp(15))
         style_button(self.prev_btn, CARD2, CARD2_ON, radius=12, border=(1, 1, 1, 0.10))
         self.prev_btn.bind(on_release=self.preview)
         root.add_widget(self.prev_btn)
-        sv = ScrollView(do_scroll_x=False, bar_width=dp(3))
-        self.form_box = BoxLayout(orientation="vertical", spacing=dp(8), size_hint_y=None,
-                                  padding=(0, 0, 0, dp(60)))
-        self.form_box.bind(minimum_height=self.form_box.setter("height"))
-        sv.add_widget(self.form_box)
+        sv, self.form_box = scroll_column(spacing=8, padding=(0, 0, 0, dp(80)))
         root.add_widget(sv)
+        self._full_h = Window.height
+        Window.bind(size=self._on_window_size)
         scr.add_widget(root)
         return scr
+
+    def _on_window_size(self, win, size):
+        """Keyboard open (window shorter): hide the Preview button so the fields get the room."""
+        self._full_h = max(self._full_h, size[1])
+        kb = size[1] < 0.8 * self._full_h
+        self.prev_btn.height = 0 if kb else dp(46)
+        self.prev_btn.opacity = 0 if kb else 1
 
     def open_form(self, idx, template=None):
         self.idx = idx
@@ -515,7 +525,7 @@ class SceneEditor:
 
     def _show_preview(self, path, error):
         self.prev_btn.disabled = False
-        self.prev_btn.text = "\u25b6  Preview this scene"
+        self.prev_btn.text = PREVIEW_TEXT
         box = BoxLayout(orientation="vertical", padding=dp(10), spacing=dp(8))
         style_card(box, CARD, 18)
         if error:
